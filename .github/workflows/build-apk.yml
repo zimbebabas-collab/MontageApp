@@ -1,0 +1,95 @@
+name: Сборка APK (РилсКат)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Сборка и загрузка APK для Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Скачивание исходного кода
+        uses: actions/checkout@v4
+
+      - name: Настройка JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Принятие лицензий Android SDK
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+      - name: Подготовка debug.keystore и .env
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkey -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=ReelsCut Debug,O=ReelsCut,C=RU"
+          fi
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+
+      - name: Настройка Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.3.1
+
+      - name: Сборка APK (assembleDebug)
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Подготовка файла APK
+        run: |
+          mkdir -p dist-apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist-apk/ReelsCut-android.apk
+          ls -lh dist-apk/ReelsCut-android.apk
+
+      - name: Загрузка APK в артефакты (скачивание на телефон)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReelsCut-APK
+          path: dist-apk/ReelsCut-android.apk
+          retention-days: 90
+
+      - name: Публикация прямой ссылки APK в Releases (для установки без распаковки)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest-apk >/dev/null 2>&1; then
+            gh release upload latest-apk dist-apk/ReelsCut-android.apk --clobber
+          else
+            gh release create latest-apk dist-apk/ReelsCut-android.apk \
+              --title "РилсКат APK (Последняя сборка)" \
+              --notes "Автоматическая сборка Android APK. Нажмите на ReelsCut-android.apk ниже, чтобы скачать напрямую на телефон."
+          fi
+        continue-on-error: true
+
+      - name: Инструкция по скачиванию в сводке
+        run: |
+          echo "## APK успешно собран!" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Способ 1 — Прямая установка (без распаковки ZIP):" >> "$GITHUB_STEP_SUMMARY"
+          echo "Откройте вкладку **Releases** -> **РилсКат APK (Последняя сборка)** и нажмите на \`ReelsCut-android.apk\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Способ 2 — Из этой вкладки Actions:" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Прокрутите страницу вниз до блока **Artifacts**." >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Нажмите на **ReelsCut-APK**, распакуйте архив и установите \`ReelsCut-android.apk\`." >> "$GITHUB_STEP_SUMMARY"

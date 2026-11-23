@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">РилсКат</string>
+    <string name="studio_title">РилсКат</string>
+    <string name="studio_subtitle">Авто-монтаж 9:16 для Reels, Shorts и TikTok</string>
+    <string name="action_pick_video">Выбрать видео</string>
+    <string name="action_replace_video">Другое видео</string>
+    <string name="action_export_full">Скачать готовый ролик</string>
+    <string name="action_export_clips">Скачать все части</string>
+    <string name="tab_modes">Режим</string>
+    <string name="tab_slices">Нарезка</string>
+    <string name="tab_captions">Субтитры</string>
+    <string name="tab_effects">Эффекты</string>
+    <string name="tab_ad">Реклама</string>
+    <string name="cd_app_logo">Логотип РилсКат</string>
+    <string name="cd_play_pause">Воспроизвести или поставить на паузу</string>
+    <string name="cd_split_clip">Разделить клип</string>
+    <string name="cd_delete_clip">Удалить клип</string>
+    <string name="cd_voice_dictate">Распознать русскую речь</string>
+    <string name="cd_ad_banner">Рекламный баннер</string>
+    <string name="cd_studio_hero">Студия авто-монтажа вертикальных видео</string>
+    <string name="cd_share_video">Поделиться видео</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "РилсКат",
+  "description": "Автоматический мобильный видеоредактор 9:16 для Reels, Shorts и TikTok с авто-нарезкой тишины, кинетическими русскими субтитрами, эффектами и рекламной паузой.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
