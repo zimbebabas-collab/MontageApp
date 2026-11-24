@@ -115,6 +115,13 @@ fun EditorScreen(
         if (uri != null) viewModel.onAdImageSelected(uri)
     }
 
+    // Zero-permission Android Photo Picker for Custom Video Ad Banner (MP4/MOV)
+    val adVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) viewModel.onAdVideoSelected(uri)
+    }
+
     // Zero-permission SAF picker for optional Ad Voiceover Audio
     val adAudioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -149,6 +156,13 @@ fun EditorScreen(
     fun launchPickAdImage() {
         adImagePickerLauncher.launch(
             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        )
+    }
+
+    fun launchPickAdVideo() {
+        viewModel.stopPlayback()
+        adVideoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
         )
     }
 
@@ -216,6 +230,7 @@ fun EditorScreen(
                             state = state,
                             onTogglePlay = viewModel::togglePlayPause,
                             onSeekEditedMs = viewModel::seekEditedMs,
+                            onPlayerProgress = viewModel::onPlayerProgress,
                             onUpdateFocalPoint = viewModel::updateFocalPoint,
                             modifier = Modifier
                                 .weight(0.88f)
@@ -229,6 +244,7 @@ fun EditorScreen(
                         onToggleSpeech = ::toggleSpeechDictation,
                         onPickReactionClip = ::launchPickReactionClip,
                         onPickAdImage = ::launchPickAdImage,
+                        onPickAdVideo = ::launchPickAdVideo,
                         onPickAdAudio = { adAudioPickerLauncher.launch(arrayOf("audio/*")) },
                         modifier = Modifier
                             .weight(1.12f)
@@ -268,6 +284,7 @@ fun EditorScreen(
                             state = state,
                             onTogglePlay = viewModel::togglePlayPause,
                             onSeekEditedMs = viewModel::seekEditedMs,
+                            onPlayerProgress = viewModel::onPlayerProgress,
                             onUpdateFocalPoint = viewModel::updateFocalPoint,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -281,6 +298,7 @@ fun EditorScreen(
                         onToggleSpeech = ::toggleSpeechDictation,
                         onPickReactionClip = ::launchPickReactionClip,
                         onPickAdImage = ::launchPickAdImage,
+                        onPickAdVideo = ::launchPickAdVideo,
                         onPickAdAudio = { adAudioPickerLauncher.launch(arrayOf("audio/*")) },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -369,13 +387,13 @@ private fun EmptyStudioHeroCard(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Чистый авто-монтаж Shorts",
+                    text = "Авто-монтаж Shorts с трекингом лиц",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "Вырезка пауз, смена планов 1.0x ↔ 1.35x, субтитры по 1 слову в центре по цветам спикеров и рекламная пауза.",
+                    text = "Наезд точно на лицо, насыщенные эффекты и SFX на пиках, авто-субтитры снизу и видео-баннер с паузой.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     textAlign = TextAlign.Center
@@ -385,9 +403,9 @@ private fun EmptyStudioHeroCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                 ) {
-                    HeroBadge("1 СЛОВО", SpeakerPink)
-                    HeroBadge("1.35x ПЛАН", SpeakerBlue)
-                    HeroBadge("*ДЕЙСТВИЕ*", ActionWhite)
+                    HeroBadge("ТРЕКИНГ ЛИЦА", SpeakerBlue)
+                    HeroBadge("SFX + FX", SpeakerPink)
+                    HeroBadge("ВИДЕО-БАННЕР", ActionWhite)
                 }
 
                 Button(
@@ -529,6 +547,7 @@ private fun EditorToolsColumn(
     onToggleSpeech: () -> Unit,
     onPickReactionClip: () -> Unit,
     onPickAdImage: () -> Unit,
+    onPickAdVideo: () -> Unit,
     onPickAdAudio: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -622,6 +641,8 @@ private fun EditorToolsColumn(
                     EditorTab.CAPTIONS -> CaptionsEditorTab(
                         state = state,
                         onToggleCaptions = viewModel::toggleCaptionsEnabled,
+                        onSubtitlePositionChange = viewModel::setSubtitlePosition,
+                        onAutoTranscribeVideo = viewModel::autoTranscribeVideoAudio,
                         onTranscriptChange = viewModel::updateTranscriptText,
                         onStartStopVoice = onToggleSpeech,
                         onCycleChunkColor = viewModel::cycleCaptionColor,
@@ -629,15 +650,21 @@ private fun EditorToolsColumn(
                     )
 
                     EditorTab.FRAMING -> CameraFramingTab(
-                        framing = state.framing,
-                        onUpdateFraming = viewModel::updateFraming
+                        state = state,
+                        onUpdateFraming = viewModel::updateFraming,
+                        onRetrackFaces = viewModel::retrackFaces,
+                        onSelectSfxPack = viewModel::setSfxPack,
+                        onSfxVolumeChange = viewModel::setSfxVolume,
+                        onPreviewSfx = viewModel::previewSfx
                     )
 
                     EditorTab.AD -> AdBannerEditorTab(
                         state = state,
                         onSetEnabled = viewModel::setAdBannerEnabled,
                         onPickAdImage = onPickAdImage,
-                        onClearAdImage = viewModel::clearAdImage,
+                        onPickAdVideo = onPickAdVideo,
+                        onClearAdMedia = viewModel::clearAdMedia,
+                        onUseVideoOwnAudioChange = viewModel::setAdUseVideoOwnAudio,
                         onPickAdAudio = onPickAdAudio,
                         onClearAdAudio = viewModel::clearAdAudio,
                         onTriggerChange = viewModel::setAdTriggerMs,

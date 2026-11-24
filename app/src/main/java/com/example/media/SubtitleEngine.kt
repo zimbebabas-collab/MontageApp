@@ -10,6 +10,7 @@ import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.sin
 
 object SubtitleEngine {
 
@@ -30,17 +31,19 @@ object SubtitleEngine {
         val scale: Float,
         val focalX: Float,
         val focalY: Float,
-        val isCloseUp: Boolean
+        val isCloseUp: Boolean,
+        val offsetXFraction: Float,
+        val offsetYFraction: Float,
+        val peakFlashAlpha: Float,
+        val saturationBoost: Float,
+        val peakPulse: Float
     )
 
     /**
-     * Splits Russian transcript into strictly ONE word per subtitle chunk.
-     * - Words wrapped in *...* (e.g. *СМЕЁТСЯ*) are automatically colored Crisp White (#FFFFFF).
-     * - Speakers alternate cleanly between Soft Neon Pink (#F472B6) and Bright Sky Blue (#38BDF8)
-     *   on line breaks, dialogue dashes, or punctuation turns.
-     * - In LITVIN_DYNAMIC mode, emphatic words also receive bright Yellow / Green accents.
+     * Generates vivid, saturated multi-colored captions (1–2 punchy words per beat)
+     * with automatic *action* white notes and alternating vibrant neon colors.
      */
-    fun generateSingleWordCaptions(
+    fun generateVibrantCaptions(
         text: String,
         totalMainDurationMs: Long,
         editMode: EditMode
@@ -53,38 +56,41 @@ object SubtitleEngine {
             val isAction: Boolean
         )
 
+        val vibrantCycle = when (editMode) {
+            EditMode.CLEAN_REFERENCE -> listOf(
+                CaptionColor.VIVID_YELLOW,
+                CaptionColor.ELECTRIC_CYAN,
+                CaptionColor.HOT_PINK,
+                CaptionColor.NEON_LIME,
+                CaptionColor.ACTION_WHITE
+            )
+            EditMode.LITVIN_DYNAMIC -> listOf(
+                CaptionColor.VIVID_YELLOW,
+                CaptionColor.NEON_LIME,
+                CaptionColor.VIVID_ORANGE,
+                CaptionColor.ELECTRIC_CYAN,
+                CaptionColor.HOT_PINK
+            )
+            EditMode.MEME_INSERT -> listOf(
+                CaptionColor.HOT_PINK,
+                CaptionColor.VIVID_YELLOW,
+                CaptionColor.ELECTRIC_CYAN,
+                CaptionColor.NEON_LIME,
+                CaptionColor.VIVID_ORANGE
+            )
+        }
+
         val tokens = mutableListOf<RawToken>()
         val lines = text.trim().split(Regex("\\r?\\n")).filter { it.isNotBlank() }
-
-        var currentSpeaker = 0 // 0 = Pink, 1 = Blue
         var inAsteriskAction = false
-        var wordsSinceSwitch = 0
+        var colorIdx = 0
 
-        lines.forEachIndexed { lineIdx, rawLine ->
-            val trimmed = rawLine.trim()
-            if (lineIdx > 0 && !inAsteriskAction) {
-                // New line signals a speaker turn in dialogue scripts
-                currentSpeaker = 1 - currentSpeaker
-                wordsSinceSwitch = 0
-            }
-
-            // Handle explicit speaker prefix tags like "Ж:", "М:", "1:", "2:", "—"
-            val cleanLine = when {
-                trimmed.startsWith("—") || trimmed.startsWith("-") -> {
-                    if (lineIdx == 0 && tokens.isNotEmpty()) {
-                        currentSpeaker = 1 - currentSpeaker
-                        wordsSinceSwitch = 0
-                    }
-                    trimmed.drop(1).trim()
-                }
-                else -> trimmed
-            }
-
+        lines.forEach { rawLine ->
+            val cleanLine = rawLine.trim().removePrefix("—").removePrefix("-").trim()
             val rawWords = cleanLine.split(Regex("\\s+")).filter { it.isNotBlank() }
             for (word in rawWords) {
                 val startsAction = word.startsWith("*")
                 val endsAction = word.endsWith("*") && word.length > 1
-
                 if (startsAction) inAsteriskAction = true
 
                 val isActionToken = inAsteriskAction || (startsAction && endsAction)
@@ -96,38 +102,24 @@ object SubtitleEngine {
                     word.uppercase()
                 }
 
-                val color = when {
-                    isActionToken -> CaptionColor.ACTION_WHITE
-                    editMode == EditMode.LITVIN_DYNAMIC && (
-                        word.endsWith("!") ||
-                            (tokens.size % 5 == 2)
-                        ) -> if (tokens.size % 2 == 0) CaptionColor.ACCENT_YELLOW else CaptionColor.ACCENT_GREEN
-                    currentSpeaker == 0 -> CaptionColor.SPEAKER_PINK
-                    else -> CaptionColor.SPEAKER_BLUE
+                val color = if (isActionToken) {
+                    CaptionColor.ACTION_WHITE
+                } else {
+                    val c = vibrantCycle[colorIdx % vibrantCycle.size]
+                    colorIdx++
+                    c
                 }
 
                 tokens.add(RawToken(displayWord, color, isActionToken))
-                wordsSinceSwitch++
-
                 if (endsAction) inAsteriskAction = false
-
-                // If single-paragraph input without newlines, smoothly alternate speakers on '?' / '!' or every ~6 words at sentence end
-                if (lines.size == 1 && !inAsteriskAction) {
-                    val endsSentence = word.endsWith("?") || word.endsWith("!") || word.endsWith(".")
-                    if (endsSentence && wordsSinceSwitch >= 2) {
-                        currentSpeaker = 1 - currentSpeaker
-                        wordsSinceSwitch = 0
-                    }
-                }
             }
         }
 
         if (tokens.isEmpty()) return emptyList()
 
-        // Weight duration by character count so each word reads naturally
         val weights = tokens.map { t ->
             val lenWeight = max(3, t.word.length).toDouble()
-            val pauseBonus = if (t.word.endsWith(".") || t.word.endsWith("!") || t.word.endsWith("?")) 2.2 else 0.0
+            val pauseBonus = if (t.word.endsWith(".") || t.word.endsWith("!") || t.word.endsWith("?")) 2.0 else 0.0
             lenWeight + pauseBonus
         }
         val totalWeight = weights.sum().coerceAtLeast(1.0)
@@ -154,24 +146,9 @@ object SubtitleEngine {
         }
     }
 
-    fun nextColorForMode(current: CaptionColor, mode: EditMode): CaptionColor {
-        val cycle = if (mode == EditMode.LITVIN_DYNAMIC) {
-            listOf(
-                CaptionColor.SPEAKER_PINK,
-                CaptionColor.SPEAKER_BLUE,
-                CaptionColor.ACTION_WHITE,
-                CaptionColor.ACCENT_YELLOW,
-                CaptionColor.ACCENT_GREEN
-            )
-        } else {
-            listOf(
-                CaptionColor.SPEAKER_PINK,
-                CaptionColor.SPEAKER_BLUE,
-                CaptionColor.ACTION_WHITE
-            )
-        }
-        val idx = cycle.indexOf(current)
-        return cycle[(idx + 1) % cycle.size]
+    fun nextColor(current: CaptionColor): CaptionColor {
+        val all = CaptionColor.entries
+        return all[(all.indexOf(current) + 1) % all.size]
     }
 
     fun mapEditedMsToTimeline(
@@ -215,7 +192,7 @@ object SubtitleEngine {
     }
 
     /**
-     * Snappy 120ms scale pop-in animation (0.85 -> 1.0) with cubic ease-out.
+     * Snappy 120ms pop-in animation (0.82 -> 1.06 -> 1.0) for punchy vibrant words.
      */
     fun computePopScale(editedMs: Long, caption: CaptionChunk): Float {
         val elapsed = (editedMs - caption.startMs).coerceAtLeast(0L)
@@ -223,16 +200,16 @@ object SubtitleEngine {
         if (elapsed >= popDurationMs) return 1.0f
         val t = (elapsed / popDurationMs).coerceIn(0f, 1f)
         val eased = 1f - (1f - t).pow(3)
-        return 0.85f + 0.15f * eased
+        return 0.82f + 0.18f * eased
     }
 
     fun computePeakImpulse(sourceMs: Long, peaks: List<AudioPeak>): Float {
         if (peaks.isEmpty()) return 0f
         var strongest = 0f
-        val decayWindowMs = 280f
+        val decayWindowMs = 340f
         for (peak in peaks) {
             val delta = sourceMs - peak.timestampMs
-            if (delta in -30L..280L) {
+            if (delta in -35L..340L) {
                 val dist = abs(delta).toFloat()
                 val impulse = (1f - dist / decayWindowMs).coerceIn(0f, 1f) * peak.intensity
                 if (impulse > strongest) strongest = impulse
@@ -242,9 +219,9 @@ object SubtitleEngine {
     }
 
     /**
-     * Clean multi-camera Shorts framing:
-     * - Toggles cleanly between normal framing (1.0x) and close-up (1.35x) with adjustable focal X/Y.
-     * - Optionally punches slightly tighter on vocal peaks.
+     * Computes face-locked camera zoom & saturated key-moment visual effects.
+     * When autoFaceTracking is enabled, locks onto clip.focusX / clip.focusY (detected via ML Kit);
+     * otherwise uses the manual focalX / focalY coordinates.
      */
     fun computeCameraFrame(
         clip: VideoClip?,
@@ -253,21 +230,56 @@ object SubtitleEngine {
         framing: FramingConfig
     ): CameraFrameState {
         if (clip == null) {
-            return CameraFrameState(1f, framing.focalX, framing.focalY, false)
+            return CameraFrameState(1f, framing.focalX, framing.focalY, false, 0f, 0f, 0f, 1f, 0f)
         }
-        val impulse = if (framing.peakPunchEnabled) computePeakImpulse(sourceMs, peaks) else 0f
-        val closeUpActive = framing.autoCloseUpCuts && (clip.isCloseUp || impulse >= 0.72f)
 
+        val fx = if (framing.autoFaceTracking) clip.focusX else framing.focalX
+        val fy = if (framing.autoFaceTracking) clip.focusY else framing.focalY
+
+        val impulse = if (framing.peakPunchEnabled || framing.saturatedPeakEffects) {
+            computePeakImpulse(sourceMs, peaks)
+        } else {
+            0f
+        }
+
+        val closeUpActive = framing.autoCloseUpCuts && (clip.isCloseUp || impulse >= 0.72f)
         var scale = if (closeUpActive) framing.closeUpZoom else 1.0f
-        if (framing.peakPunchEnabled && impulse > 0.25f) {
+        if (framing.peakPunchEnabled && impulse > 0.20f) {
             scale += impulse * framing.peakPunchBonus
+        }
+
+        var offsetX = 0f
+        var offsetY = 0f
+        if (framing.microShakeOnPeak && impulse > 0.28f) {
+            val amp = impulse * 0.022f
+            val phase = sourceMs * 0.09
+            offsetX = (sin(phase * 1.8) * amp).toFloat()
+            offsetY = (sin(phase * 2.5 + 0.9) * amp).toFloat()
+            scale = max(scale, 1.08f)
+        }
+
+        val flashAlpha = if (framing.saturatedPeakEffects && framing.neonFlashOnPeak && impulse > 0.30f) {
+            ((impulse - 0.30f) / 0.70f * 0.34f).coerceIn(0f, 0.34f)
+        } else {
+            0f
+        }
+
+        val saturationBoost = if (framing.saturatedPeakEffects && impulse > 0.25f) {
+            1f + impulse * 0.45f
+        } else {
+            1f
         }
 
         return CameraFrameState(
             scale = scale.coerceIn(1.0f, 1.85f),
-            focalX = framing.focalX.coerceIn(0.15f, 0.85f),
-            focalY = framing.focalY.coerceIn(0.15f, 0.85f),
-            isCloseUp = closeUpActive
+            focalX = fx.coerceIn(0.15f, 0.85f),
+            focalY = fy.coerceIn(0.15f, 0.85f),
+            isCloseUp = closeUpActive,
+            offsetXFraction = offsetX,
+            offsetYFraction = offsetY,
+            peakFlashAlpha = flashAlpha,
+            saturationBoost = saturationBoost,
+            peakPulse = impulse
         )
     }
 

@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
@@ -27,11 +29,14 @@ import androidx.core.content.FileProvider
 import androidx.core.content.res.ResourcesCompat
 import com.example.R
 import com.example.model.AdBannerConfig
+import com.example.model.AdMediaType
 import com.example.model.AudioPeak
 import com.example.model.CaptionChunk
 import com.example.model.ExportedVideo
 import com.example.model.FramingConfig
 import com.example.model.MemeConfig
+import com.example.model.SfxEvent
+import com.example.model.SubtitlePosition
 import com.example.model.VideoClip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -66,8 +71,10 @@ object VideoExporter {
         sourceUri: Uri,
         clips: List<VideoClip>,
         peaks: List<AudioPeak>,
+        sfxEvents: List<SfxEvent>,
         captions: List<CaptionChunk>,
         captionsEnabled: Boolean,
+        subtitlePosition: SubtitlePosition,
         framing: FramingConfig,
         meme: MemeConfig,
         adBanner: AdBannerConfig,
@@ -80,12 +87,14 @@ object VideoExporter {
             sourceUri = sourceUri,
             clips = clips,
             peaks = peaks,
+            sfxEvents = sfxEvents,
             captions = if (captionsEnabled) captions else emptyList(),
+            subtitlePosition = subtitlePosition,
             framing = framing,
             meme = meme,
             includeReactionClip = meme.reactionClipUri != null && meme.reactionClipDurationMs > 0L,
             adBanner = adBanner,
-            includeAdBanner = adBanner.enabled && adBanner.imageUri != null,
+            includeAdBanner = adBanner.enabled && adBanner.mediaUri != null,
             outputDisplayName = fileName,
             onProgress = onProgress
         )
@@ -96,8 +105,10 @@ object VideoExporter {
         sourceUri: Uri,
         clips: List<VideoClip>,
         peaks: List<AudioPeak>,
+        sfxEvents: List<SfxEvent>,
         captions: List<CaptionChunk>,
         captionsEnabled: Boolean,
+        subtitlePosition: SubtitlePosition,
         framing: FramingConfig,
         meme: MemeConfig,
         onProgress: (Float, String, Int, Int) -> Unit
@@ -126,12 +137,18 @@ object VideoExporter {
                 emptyList()
             }
 
+            val shiftedSfx = sfxEvents
+                .filter { it.editedMs in clipStartEdited until clipEndEdited }
+                .map { it.copy(editedMs = (it.editedMs - clipStartEdited).coerceAtLeast(0L)) }
+
             val exported = renderSequenceToMp4(
                 context = context,
                 sourceUri = sourceUri,
                 clips = listOf(clip),
                 peaks = peaks,
+                sfxEvents = shiftedSfx,
                 captions = shiftedCaptions,
+                subtitlePosition = subtitlePosition,
                 framing = framing,
                 meme = meme,
                 includeReactionClip = false,
@@ -158,7 +175,9 @@ object VideoExporter {
         sourceUri: Uri,
         clips: List<VideoClip>,
         peaks: List<AudioPeak>,
+        sfxEvents: List<SfxEvent>,
         captions: List<CaptionChunk>,
+        subtitlePosition: SubtitlePosition,
         framing: FramingConfig,
         meme: MemeConfig,
         includeReactionClip: Boolean,
@@ -176,7 +195,7 @@ object VideoExporter {
             0L
         }
         val totalContentMs = mainContentMs + reactionDurationMs
-        val adDurationMs = if (includeAdBanner) (adBanner.durationSec.coerceIn(3, 8) * 1000L) else 0L
+        val adDurationMs = if (includeAdBanner) (adBanner.durationSec.coerceIn(3, 15) * 1000L) else 0L
         val adTriggerMs = if (includeAdBanner) {
             adBanner.triggerAtMs.coerceIn(200L, max(200L, totalContentMs - 200L))
         } else {
@@ -188,8 +207,8 @@ object VideoExporter {
         val tempFile = File(exportDir, outputDisplayName)
         if (tempFile.exists()) tempFile.delete()
 
-        onProgress(0.04f, "Сведение аудиодорожки...")
-        val mixedPcm = buildMixedAudioPcm(
+        onProgress(0.04f, "Сведение аудио и звуковых эффектов...")
+        val baseMixedPcm = buildMixedAudioPcm(
             context = context,
             sourceUri = sourceUri,
             clips = clips,
@@ -200,9 +219,20 @@ object VideoExporter {
             adDurationMs = adDurationMs,
             adBanner = adBanner
         )
+        val mixedPcm = SoundEffectsEngine.mixSfxIntoPcm(
+            pcmBytes = baseMixedPcm,
+            events = sfxEvents,
+            volume = framing.sfxVolume,
+            includeAd = includeAdBanner,
+            adTriggerMs = adTriggerMs,
+            adDurationMs = adDurationMs
+        )
 
-        val adBitmap = if (includeAdBanner && adBanner.imageUri != null) {
-            loadBitmapFromUri(context, adBanner.imageUri, OUT_WIDTH, OUT_HEIGHT)
+        val adImageBitmap = if (includeAdBanner &&
+            adBanner.mediaType == AdMediaType.IMAGE &&
+            adBanner.mediaUri != null
+        ) {
+            loadBitmapFromUri(context, adBanner.mediaUri, OUT_WIDTH, OUT_HEIGHT)
         } else {
             null
         }
@@ -213,6 +243,7 @@ object VideoExporter {
 
         val mainRetriever = MediaMetadataRetriever()
         var reactionRetriever: MediaMetadataRetriever? = null
+        var adVideoRetriever: MediaMetadataRetriever? = null
         var videoEncoder: MediaCodec? = null
         var audioEncoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
@@ -224,6 +255,13 @@ object VideoExporter {
                 reactionRetriever = MediaMetadataRetriever().apply {
                     setDataSource(context, meme.reactionClipUri)
                 }
+            }
+            if (includeAdBanner && adBanner.mediaType == AdMediaType.VIDEO && adBanner.mediaUri != null) {
+                adVideoRetriever = runCatching {
+                    MediaMetadataRetriever().apply {
+                        setDataSource(context, adBanner.mediaUri)
+                    }
+                }.getOrNull()
             }
 
             val videoFormat = MediaFormat.createVideoFormat(
@@ -401,17 +439,29 @@ object VideoExporter {
                 }
             }
 
-            // Paints matching clean reference style
+            // Paints for vivid saturated rendering
             val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            val adBitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-            // Crisp single-word subtitle paint (Montserrat Black + clean dark drop-shadow, NO thick outline)
-            val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            // Saturated multi-colored subtitle fill & crisp dark outline paints
+            val subtitleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.typeface = Typeface.create(typeface, Typeface.BOLD)
-                textSize = 78f
+                textSize = 80f
+                textAlign = Paint.Align.CENTER
+                style = Paint.Style.STROKE
+                strokeWidth = 14f
+                strokeJoin = Paint.Join.ROUND
+                color = Color.argb(240, 10, 10, 16)
+            }
+            val subtitleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.typeface = Typeface.create(typeface, Typeface.BOLD)
+                textSize = 80f
                 textAlign = Paint.Align.CENTER
                 style = Paint.Style.FILL
-                setShadowLayer(14f, 0f, 6f, Color.argb(230, 0, 0, 0))
             }
+
+            // Neon peak flash paint
+            val peakFlashPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
             // Top Black Meme Bar paints
             val memeBarBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -431,23 +481,23 @@ object VideoExporter {
                     OUT_WIDTH / 2f,
                     OUT_HEIGHT / 2f,
                     OUT_HEIGHT * 0.65f,
-                    intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(120, 0, 0, 0)),
-                    floatArrayOf(0f, 0.60f, 1f),
+                    intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(128, 0, 0, 0)),
+                    floatArrayOf(0f, 0.58f, 1f),
                     Shader.TileMode.CLAMP
                 )
             }
 
-            // Mid-Roll Ad Banner paints (subtle rgba(0,0,0,0.45) dim backdrop)
+            // Mid-Roll Ad Banner paints (exact rgba(0,0,0,0.45) dim backdrop)
             val dimPaint = Paint().apply {
                 color = Color.argb(115, 0, 0, 0) // rgba(0, 0, 0, 0.45)
             }
             val adBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(180, 255, 255, 255)
+                color = Color.argb(200, 255, 255, 255)
                 style = Paint.Style.STROKE
                 strokeWidth = 4f
             }
             val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(215, 11, 11, 15)
+                color = Color.argb(220, 11, 11, 15)
                 style = Paint.Style.FILL
             }
             val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -460,8 +510,10 @@ object VideoExporter {
             val totalFrames = max(1, ((totalOutputMs * OUT_FPS) / 1000L).toInt())
             var cachedFrame: Bitmap? = null
             var lastFetchedKey = ""
+            var cachedAdVideoFrame: Bitmap? = null
+            var lastAdFrameKey = -1L
 
-            onProgress(0.08f, "Рендер 9:16 (субтитры, планы, эффекты)...")
+            onProgress(0.08f, "Рендер 9:16 (трекинг лица, эффекты, субтитры)...")
 
             for (frameIndex in 0 until totalFrames) {
                 coroutineContext.ensureActive()
@@ -513,61 +565,131 @@ object VideoExporter {
                     lastFetchedKey = frameKey
                 }
 
+                // Fetch live frame of Video Ad Banner if playing in the mid-roll pause window
+                if (inAdWindow && adVideoRetriever != null) {
+                    val adElapsed = (outMs - adTriggerMs).coerceAtLeast(0L)
+                    val adVideoLen = adBanner.adVideoDurationMs.coerceAtLeast(1000L)
+                    val adPosMs = adElapsed % adVideoLen
+                    val quantizedAdMs = (adPosMs / 42L) * 42L
+                    if (quantizedAdMs != lastAdFrameKey) {
+                        val fetchedAd = fetchFrameSafe(adVideoRetriever, adPosMs)
+                        if (fetchedAd != null) {
+                            cachedAdVideoFrame?.recycle()
+                            cachedAdVideoFrame = fetchedAd
+                            lastAdFrameKey = quantizedAdMs
+                        }
+                    }
+                }
+
                 val canvas = inputSurface.lockCanvas(null)
                 try {
                     canvas.drawColor(Color.parseColor("#0B0B0F"))
 
                     val cameraFrame = when {
-                        inAdWindow -> SubtitleEngine.CameraFrameState(1f, framing.focalX, framing.focalY, false)
+                        inAdWindow -> SubtitleEngine.CameraFrameState(
+                            scale = 1f,
+                            focalX = framing.focalX,
+                            focalY = framing.focalY,
+                            isCloseUp = false,
+                            offsetXFraction = 0f,
+                            offsetYFraction = 0f,
+                            peakFlashAlpha = 0f,
+                            saturationBoost = 1f,
+                            peakPulse = 0f
+                        )
                         pos is SubtitleEngine.TimelinePosition.MainClip -> SubtitleEngine.computeCameraFrame(
                             clip = pos.clip,
                             sourceMs = pos.sourceMs,
                             peaks = peaks,
                             framing = framing
                         )
-                        else -> SubtitleEngine.CameraFrameState(1f, 0.5f, 0.5f, false)
+                        else -> SubtitleEngine.CameraFrameState(
+                            scale = 1f,
+                            focalX = 0.5f,
+                            focalY = 0.5f,
+                            isCloseUp = false,
+                            offsetXFraction = 0f,
+                            offsetYFraction = 0f,
+                            peakFlashAlpha = 0f,
+                            saturationBoost = 1f,
+                            peakPulse = 0f
+                        )
                     }
 
-                    // 1. Draw vertical 9:16 video frame with focal-point close-up framing
+                    // 1. Draw vertical 9:16 video frame with face-locked focal zoom + saturation boost on peaks
                     cachedFrame?.let { bmp ->
+                        bitmapPaint.colorFilter = if (cameraFrame.saturationBoost > 1.03f) {
+                            ColorMatrixColorFilter(
+                                ColorMatrix().apply { setSaturation(cameraFrame.saturationBoost) }
+                            )
+                        } else {
+                            null
+                        }
                         drawCenterCropWithFocalZoom(canvas, bmp, cameraFrame, bitmapPaint)
                     }
 
-                    // 2. Optional subtle vignette
+                    // 2. Saturated vivid neon flash & edge energy glow on vocal peaks
+                    if (!inAdWindow && cameraFrame.peakFlashAlpha > 0.01f &&
+                        pos is SubtitleEngine.TimelinePosition.MainClip
+                    ) {
+                        val flashA = (cameraFrame.peakFlashAlpha * 255f).roundToInt().coerceIn(0, 120)
+                        peakFlashPaint.shader = RadialGradient(
+                            OUT_WIDTH / 2f,
+                            OUT_HEIGHT / 2f,
+                            OUT_HEIGHT * 0.62f,
+                            intArrayOf(
+                                Color.argb((flashA * 0.45f).roundToInt(), 255, 255, 255),
+                                Color.argb((flashA * 0.7f).roundToInt(), 0, 240, 255),
+                                Color.argb(flashA, 255, 46, 147)
+                            ),
+                            floatArrayOf(0f, 0.55f, 1f),
+                            Shader.TileMode.CLAMP
+                        )
+                        canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), OUT_HEIGHT.toFloat(), peakFlashPaint)
+                    }
+
+                    // 3. Optional subtle vignette
                     if (framing.vignette && pos is SubtitleEngine.TimelinePosition.MainClip) {
                         canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), OUT_HEIGHT.toFloat(), vignettePaint)
                     }
 
-                    // 3. Top black meme caption bar (when enabled)
+                    // 4. Top black meme caption bar (when enabled)
                     if (meme.topBarEnabled && meme.topBarText.isNotBlank() &&
                         pos is SubtitleEngine.TimelinePosition.MainClip
                     ) {
                         drawTopMemeBar(canvas, meme.topBarText.uppercase(), memeBarBgPaint, memeBarTextPaint)
                     }
 
-                    // 4. Dead-center single-word colored subtitle (50% X, 52% Y) with crisp drop-shadow
+                    // 5. Saturated multi-colored subtitle (BOTTOM or CENTER) with neon glow + crisp outline
                     if (!inAdWindow && pos is SubtitleEngine.TimelinePosition.MainClip) {
                         val activeCaption = SubtitleEngine.activeCaptionAt(editedContentMs, captions)
                         if (activeCaption != null) {
-                            drawSingleWordCenterSubtitle(
+                            drawVibrantSubtitle(
                                 canvas = canvas,
                                 caption = activeCaption,
                                 editedMs = editedContentMs,
-                                paint = subtitlePaint
+                                position = subtitlePosition,
+                                strokePaint = subtitleStrokePaint,
+                                fillPaint = subtitleFillPaint
                             )
                         }
                     }
 
-                    // 5. Dead-center mid-roll Ad Banner (25%..35% area) over rgba(0,0,0,0.45) dim
-                    if (inAdWindow && adBitmap != null) {
+                    // 6. Dead-center mid-roll Ad Banner (IMAGE or VIDEO, 25%..35% area) over rgba(0,0,0,0.45) dim
+                    val activeAdBitmap = if (adBanner.mediaType == AdMediaType.VIDEO) {
+                        cachedAdVideoFrame
+                    } else {
+                        adImageBitmap
+                    }
+                    if (inAdWindow && activeAdBitmap != null) {
                         val remainingSec = ceilSeconds(adTriggerMs + adDurationMs - outMs)
                         drawMidRollAdBanner(
                             canvas = canvas,
-                            adBitmap = adBitmap,
+                            adBitmap = activeAdBitmap,
                             areaPercent = adBanner.areaPercent.coerceIn(25, 35),
                             remainingSec = remainingSec,
                             dimPaint = dimPaint,
-                            bitmapPaint = bitmapPaint,
+                            bitmapPaint = adBitmapPaint,
                             borderPaint = adBorderPaint,
                             badgeBgPaint = badgeBgPaint,
                             badgeTextPaint = badgeTextPaint
@@ -589,6 +711,7 @@ object VideoExporter {
             }
 
             cachedFrame?.recycle()
+            cachedAdVideoFrame?.recycle()
             drainVideoEncoder(endOfStream = true)
             if (hasAudio) {
                 pumpAudioEncoder(drainToEnd = true)
@@ -599,7 +722,8 @@ object VideoExporter {
         } finally {
             runCatching { mainRetriever.release() }
             runCatching { reactionRetriever?.release() }
-            runCatching { adBitmap?.recycle() }
+            runCatching { adVideoRetriever?.release() }
+            runCatching { adImageBitmap?.recycle() }
             runCatching {
                 videoEncoder?.stop()
                 videoEncoder?.release()
@@ -671,14 +795,16 @@ object VideoExporter {
         val scaledW = bw * finalScale
         val scaledH = bh * finalScale
 
-        // Center-crop base position, then shift around the chosen focal point
+        // Center-crop base position, then lock zoom accurately onto detected face (focalX, focalY) + micro-shake
         val pivotCanvasX = OUT_WIDTH * cam.focalX
         val pivotCanvasY = OUT_HEIGHT * cam.focalY
         val baseLeft = (OUT_WIDTH - bw * baseScale) / 2f
         val baseTop = (OUT_HEIGHT - bh * baseScale) / 2f
 
-        val rawLeft = pivotCanvasX - (pivotCanvasX - baseLeft) * cam.scale
-        val rawTop = pivotCanvasY - (pivotCanvasY - baseTop) * cam.scale
+        val shakeX = cam.offsetXFraction * OUT_WIDTH
+        val shakeY = cam.offsetYFraction * OUT_HEIGHT
+        val rawLeft = pivotCanvasX - (pivotCanvasX - baseLeft) * cam.scale + shakeX
+        val rawTop = pivotCanvasY - (pivotCanvasY - baseTop) * cam.scale + shakeY
 
         val minLeft = OUT_WIDTH - scaledW
         val minTop = OUT_HEIGHT - scaledH
@@ -712,35 +838,45 @@ object VideoExporter {
     }
 
     /**
-     * Strictly ONE word at a time dead-center (50% X, 52% Y) with crisp drop-shadow and 120ms pop-in.
+     * Saturated multi-colored word subtitle positioned cleanly at BOTTOM (78% Y) or CENTER (52% Y)
+     * with dark outline, vivid colored neon glow, and snappy 120ms pop-in animation.
      */
-    private fun drawSingleWordCenterSubtitle(
+    private fun drawVibrantSubtitle(
         canvas: Canvas,
         caption: CaptionChunk,
         editedMs: Long,
-        paint: Paint
+        position: SubtitlePosition,
+        strokePaint: Paint,
+        fillPaint: Paint
     ) {
         val popScale = SubtitleEngine.computePopScale(editedMs, caption)
         val centerX = OUT_WIDTH * 0.50f
-        val centerY = OUT_HEIGHT * 0.52f
-
-        paint.color = caption.color.argb
-        // Auto-fit very long Russian words cleanly inside 88% width
-        var textSize = if (caption.isActionNote) 64f else 82f
-        paint.textSize = textSize
-        val maxW = OUT_WIDTH * 0.88f
-        while (paint.measureText(caption.text) > maxW && textSize > 38f) {
-            textSize -= 4f
-            paint.textSize = textSize
+        val centerY = when (position) {
+            SubtitlePosition.BOTTOM -> OUT_HEIGHT * 0.78f
+            SubtitlePosition.CENTER -> OUT_HEIGHT * 0.52f
         }
 
-        val fm = paint.fontMetrics
+        fillPaint.color = caption.color.argb
+        fillPaint.setShadowLayer(18f, 0f, 5f, caption.color.glowArgb)
+
+        var textSize = if (caption.isActionNote) 64f else 84f
+        fillPaint.textSize = textSize
+        val maxW = OUT_WIDTH * 0.88f
+        while (fillPaint.measureText(caption.text) > maxW && textSize > 38f) {
+            textSize -= 4f
+            fillPaint.textSize = textSize
+        }
+        strokePaint.textSize = textSize
+        strokePaint.strokeWidth = (textSize * 0.17f).coerceIn(8f, 15f)
+
+        val fm = fillPaint.fontMetrics
         val baselineOffset = -(fm.ascent + fm.descent) / 2f
 
         canvas.save()
         canvas.translate(centerX, centerY)
         canvas.scale(popScale, popScale)
-        canvas.drawText(caption.text, 0f, baselineOffset, paint)
+        canvas.drawText(caption.text, 0f, baselineOffset, strokePaint)
+        canvas.drawText(caption.text, 0f, baselineOffset, fillPaint)
         canvas.restore()
     }
 
@@ -872,6 +1008,11 @@ object VideoExporter {
         val adPcm: ByteArray? = if (includeAd && adDurationMs > 0L) {
             val targetBytes = msToPcmBytes(adDurationMs)
             val decodedAd = when {
+                adBanner.mediaType == AdMediaType.VIDEO &&
+                    adBanner.useVideoOwnAudio &&
+                    !adBanner.useTts &&
+                    adBanner.mediaUri != null ->
+                    decodeAudioToStereo44100(context, adBanner.mediaUri, 0L, adDurationMs)
                 !adBanner.useTts && adBanner.audioUri != null ->
                     decodeAudioToStereo44100(context, adBanner.audioUri, 0L, adDurationMs)
                 adBanner.useTts && !adBanner.synthesizedTtsPath.isNullOrBlank() ->

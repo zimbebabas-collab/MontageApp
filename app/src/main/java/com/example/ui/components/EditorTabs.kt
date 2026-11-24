@@ -24,9 +24,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Face
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Refresh
@@ -35,6 +38,9 @@ import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -66,9 +72,9 @@ import com.example.model.CaptionColor
 import com.example.model.EditMode
 import com.example.model.EditorUiState
 import com.example.model.MemeConfig
+import com.example.model.SubtitlePosition
 import com.example.ui.theme.AccentGreen
 import com.example.ui.theme.AccentYellow
-import com.example.ui.theme.ActionWhite
 import com.example.ui.theme.BorderSubtle
 import com.example.ui.theme.HotCoral
 import com.example.ui.theme.ObsidianBg
@@ -481,11 +487,23 @@ fun SlicesTimelineTab(
                                 }
                             }
 
-                            Text(
-                                text = "${SubtitleEngine.formatTimeMs(clip.startMs)} – ${SubtitleEngine.formatTimeMs(clip.endMs)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${SubtitleEngine.formatTimeMs(clip.startMs)} – ${SubtitleEngine.formatTimeMs(clip.endMs)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                                Icon(
+                                    imageVector = if (clip.hasDetectedFace) Icons.Rounded.Face else Icons.Rounded.CenterFocusStrong,
+                                    contentDescription = if (clip.hasDetectedFace) "Лицо найдено" else "Ключевая точка",
+                                    tint = if (clip.hasDetectedFace) AccentGreen else SpeakerBlue.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -493,9 +511,9 @@ fun SlicesTimelineTab(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "${(clip.durationMs / 1000f).let { String.format("%.1fс", it) }}",
+                                    text = "${(clip.durationMs / 1000f).let { String.format("%.1fс", it) }} • ${if (clip.hasDetectedFace) "Лицо" else "Точка"}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = SpeakerPink
+                                    color = if (clip.hasDetectedFace) AccentGreen else SpeakerPink
                                 )
                                 Row {
                                     IconButton(
@@ -537,6 +555,8 @@ fun SlicesTimelineTab(
 fun CaptionsEditorTab(
     state: EditorUiState,
     onToggleCaptions: (Boolean) -> Unit,
+    onSubtitlePositionChange: (SubtitlePosition) -> Unit,
+    onAutoTranscribeVideo: () -> Unit,
     onTranscriptChange: (String) -> Unit,
     onStartStopVoice: () -> Unit,
     onCycleChunkColor: (String) -> Unit,
@@ -550,12 +570,12 @@ fun CaptionsEditorTab(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Субтитры по 1 слову в центре",
+                    text = "Яркие разноцветные субтитры",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary
                 )
                 Text(
-                    text = "Новая строка — смена спикера • *слово* — белое действие",
+                    text = "Насыщенные буквы с неоновым свечением • *слово* — белый акцент",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
@@ -571,43 +591,107 @@ fun CaptionsEditorTab(
             )
         }
 
-        // Speaker Color Coding Legend
+        // Subtitle Position Toggle: Bottom (default) vs Center
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            SpeakerLegendPill("Спикер 1", SpeakerPink)
-            SpeakerLegendPill("Спикер 2", SpeakerBlue)
-            SpeakerLegendPill("*Действие*", ActionWhite)
+            Text(
+                text = "Позиция:",
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary
+            )
+            SubtitlePosition.entries.forEach { pos ->
+                FilterChip(
+                    selected = state.subtitlePosition == pos,
+                    onClick = { onSubtitlePositionChange(pos) },
+                    label = { Text(pos.labelRu) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = SpeakerBlue.copy(alpha = 0.24f),
+                        selectedLabelColor = SpeakerBlue,
+                        labelColor = TextSecondary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("subtitle_pos_${pos.name.lowercase()}")
+                )
+            }
         }
 
-        // Russian Speech Recognition Button (ru-RU)
+        // Primary Auto-Transcribe Russian Voice directly from uploaded video
         Button(
-            onClick = onStartStopVoice,
+            onClick = onAutoTranscribeVideo,
+            enabled = state.videoUri != null && !state.isTranscribingVideo,
             shape = RoundedCornerShape(13.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (state.isListeningSpeech) HotCoral else SpeakerPink,
-                contentColor = if (state.isListeningSpeech) Color.White else ObsidianBg
+                containerColor = SpeakerBlue,
+                contentColor = ObsidianBg
             ),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
+                .testTag("auto_transcribe_video_button")
+        ) {
+            if (state.isTranscribingVideo) {
+                CircularProgressIndicator(
+                    color = ObsidianBg,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Распознаём голос из видео...", style = MaterialTheme.typography.labelLarge)
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.GraphicEq,
+                    contentDescription = null,
+                    modifier = Modifier.size(19.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Авто-распознать голос из видео", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
+        // Secondary Mic Dictation Fallback (ru-RU)
+        OutlinedButton(
+            onClick = onStartStopVoice,
+            shape = RoundedCornerShape(13.dp),
+            border = BorderStroke(
+                1.dp,
+                if (state.isListeningSpeech) HotCoral else SpeakerPink.copy(alpha = 0.75f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp)
                 .testTag("voice_caption_button")
         ) {
             Icon(
                 imageVector = if (state.isListeningSpeech) Icons.Rounded.Stop else Icons.Rounded.Mic,
                 contentDescription = stringResource(R.string.cd_voice_dictate),
-                modifier = Modifier.size(19.dp)
+                tint = if (state.isListeningSpeech) HotCoral else SpeakerPink,
+                modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = if (state.isListeningSpeech) {
-                    "Остановить запись (ru-RU)"
+                    "Остановить диктовку (ru-RU)"
                 } else {
-                    "Надиктовать текст (ru-RU)"
+                    "Надиктовать через микрофон (ru-RU)"
                 },
+                color = if (state.isListeningSpeech) HotCoral else SpeakerPink,
                 style = MaterialTheme.typography.labelLarge
             )
+        }
+
+        // Vibrant 6-Color Palette Legend
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            CaptionColor.entries.forEach { c ->
+                SpeakerLegendPill(c.labelRu, Color(c.argb))
+            }
         }
 
         if (state.speechPartialText.isNotBlank()) {
@@ -624,13 +708,13 @@ fun CaptionsEditorTab(
             )
         }
 
-        // Clean Transcript Text Editor -> instant 1-word splitter
+        // Clean Transcript Text Editor -> instant vibrant word splitter
         OutlinedTextField(
             value = state.rawTranscriptText,
             onValueChange = onTranscriptChange,
-            label = { Text("Текст диалога (разбивается по 1 слову)") },
+            label = { Text("Текст субтитров (каждое слово — яркий цвет)") },
             placeholder = {
-                Text("Ты серьёзно это сделал?\nДа, я воспринял всё буквально *СМЕЁТСЯ*")
+                Text("Ты серьёзно это сделал?\nДа, это просто пушка *СМЕЁТСЯ*")
             },
             minLines = 2,
             maxLines = 4,
