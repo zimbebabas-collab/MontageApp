@@ -7,7 +7,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.ReelsEditorScreen
+import com.example.ui.EditorScreen
 import com.example.ui.theme.ReelsCutTheme
 import com.example.viewmodel.EditorViewModel
 
@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ReelsCutTheme {
                 val editorViewModel: EditorViewModel = viewModel()
-                ReelsEditorScreen(viewModel = editorViewModel)
+                EditorScreen(viewModel = editorViewModel)
             }
         }
     }

@@ -31,9 +31,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Campaign
+import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -68,19 +68,19 @@ import com.example.model.EditorTab
 import com.example.model.EditorUiState
 import com.example.model.ExportState
 import com.example.ui.components.AdBannerEditorTab
+import com.example.ui.components.CameraFramingTab
 import com.example.ui.components.CaptionsEditorTab
-import com.example.ui.components.EffectsEditorTab
 import com.example.ui.components.ExportActionDock
 import com.example.ui.components.ExportStatusDialog
 import com.example.ui.components.ModeSelectorTab
 import com.example.ui.components.SlicesTimelineTab
 import com.example.ui.components.VideoPreviewStage
+import com.example.ui.theme.ActionWhite
 import com.example.ui.theme.BorderSubtle
-import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.HotCoral
-import com.example.ui.theme.NeonGreen
-import com.example.ui.theme.NeonPurple
 import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.SpeakerBlue
+import com.example.ui.theme.SpeakerPink
 import com.example.ui.theme.SurfaceCard
 import com.example.ui.theme.SurfaceDark
 import com.example.ui.theme.TextPrimary
@@ -94,31 +94,32 @@ fun EditorScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // Zero-permission Android Photo Picker for Video
+    // Zero-permission Android Photo Picker for Main Video
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) {
-            viewModel.onVideoSelected(uri)
-        }
+        if (uri != null) viewModel.onVideoSelected(uri)
+    }
+
+    // Zero-permission Android Photo Picker for End Meme / Reaction Video Clip
+    val reactionClipPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) viewModel.onReactionClipSelected(uri)
     }
 
     // Zero-permission Android Photo Picker for Custom Ad Banner Image (PNG/JPG)
     val adImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) {
-            viewModel.onAdImageSelected(uri)
-        }
+        if (uri != null) viewModel.onAdImageSelected(uri)
     }
 
-    // Zero-permission Storage Access Framework picker for optional Ad Voiceover Audio
+    // Zero-permission SAF picker for optional Ad Voiceover Audio
     val adAudioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) {
-            viewModel.onAdAudioSelected(uri)
-        }
+        if (uri != null) viewModel.onAdAudioSelected(uri)
     }
 
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
@@ -134,6 +135,13 @@ fun EditorScreen(
     fun launchPickVideo() {
         viewModel.stopPlayback()
         videoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+        )
+    }
+
+    fun launchPickReactionClip() {
+        viewModel.stopPlayback()
+        reactionClipPickerLauncher.launch(
             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
         )
     }
@@ -167,6 +175,7 @@ fun EditorScreen(
         topBar = {
             StudioTopBar(
                 videoName = state.videoFileName,
+                modeBadge = state.editMode.shortTitleRu,
                 hasVideo = state.videoUri != null,
                 onPickVideo = ::launchPickVideo
             )
@@ -199,7 +208,7 @@ fun EditorScreen(
                         EmptyStudioHeroCard(
                             onPickVideo = ::launchPickVideo,
                             modifier = Modifier
-                                .weight(0.9f)
+                                .weight(0.88f)
                                 .align(Alignment.CenterVertically)
                         )
                     } else {
@@ -207,8 +216,9 @@ fun EditorScreen(
                             state = state,
                             onTogglePlay = viewModel::togglePlayPause,
                             onSeekEditedMs = viewModel::seekEditedMs,
+                            onUpdateFocalPoint = viewModel::updateFocalPoint,
                             modifier = Modifier
-                                .weight(0.9f)
+                                .weight(0.88f)
                                 .fillMaxHeight()
                         )
                     }
@@ -217,10 +227,11 @@ fun EditorScreen(
                         state = state,
                         viewModel = viewModel,
                         onToggleSpeech = ::toggleSpeechDictation,
+                        onPickReactionClip = ::launchPickReactionClip,
                         onPickAdImage = ::launchPickAdImage,
                         onPickAdAudio = { adAudioPickerLauncher.launch(arrayOf("audio/*")) },
                         modifier = Modifier
-                            .weight(1.1f)
+                            .weight(1.12f)
                             .fillMaxHeight()
                     )
                 }
@@ -257,9 +268,10 @@ fun EditorScreen(
                             state = state,
                             onTogglePlay = viewModel::togglePlayPause,
                             onSeekEditedMs = viewModel::seekEditedMs,
+                            onUpdateFocalPoint = viewModel::updateFocalPoint,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height((this@BoxWithConstraints.maxHeight * 0.44f).coerceIn(220.dp, 360.dp))
+                                .height((this@BoxWithConstraints.maxHeight * 0.48f).coerceIn(250.dp, 420.dp))
                         )
                     }
 
@@ -267,6 +279,7 @@ fun EditorScreen(
                         state = state,
                         viewModel = viewModel,
                         onToggleSpeech = ::toggleSpeechDictation,
+                        onPickReactionClip = ::launchPickReactionClip,
                         onPickAdImage = ::launchPickAdImage,
                         onPickAdAudio = { adAudioPickerLauncher.launch(arrayOf("audio/*")) },
                         modifier = Modifier
@@ -292,7 +305,7 @@ private fun EmptyStudioHeroCard(
 ) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(20.dp),
         color = SurfaceDark,
         border = BorderStroke(1.dp, BorderSubtle)
     ) {
@@ -303,7 +316,7 @@ private fun EmptyStudioHeroCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(148.dp)
+                    .height(136.dp)
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_studio_hero_1795466466494),
@@ -322,27 +335,27 @@ private fun EmptyStudioHeroCard(
                 )
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = ObsidianBg.copy(alpha = 0.8f),
-                    border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.7f)),
+                    color = ObsidianBg.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, SpeakerBlue.copy(alpha = 0.6f)),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(10.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.AutoAwesome,
                             contentDescription = null,
-                            tint = ElectricCyan,
+                            tint = SpeakerBlue,
                             modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = "9:16 REELS / SHORTS / TIKTOK",
+                            text = "SHORTS / REELS 9:16",
                             style = MaterialTheme.typography.labelSmall,
-                            color = ElectricCyan
+                            color = SpeakerBlue
                         )
                     }
                 }
@@ -351,18 +364,18 @@ private fun EmptyStudioHeroCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Авто-монтаж как у Литвина",
+                    text = "Чистый авто-монтаж Shorts",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "Загрузите видео — вырежем паузы по громкости, добавим зум и тряску на пиках, цветные русские субтитры и рекламную паузу.",
+                    text = "Вырезка пауз, смена планов 1.0x ↔ 1.35x, субтитры по 1 слову в центре по цветам спикеров и рекламная пауза.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     textAlign = TextAlign.Center
@@ -372,21 +385,21 @@ private fun EmptyStudioHeroCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                 ) {
-                    HeroBadge("Без тишины", NeonPurple)
-                    HeroBadge("Субтитры RU", NeonGreen)
-                    HeroBadge("Реклама-пауза", ElectricCyan)
+                    HeroBadge("1 СЛОВО", SpeakerPink)
+                    HeroBadge("1.35x ПЛАН", SpeakerBlue)
+                    HeroBadge("*ДЕЙСТВИЕ*", ActionWhite)
                 }
 
                 Button(
                     onClick = onPickVideo,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = NeonPurple,
-                        contentColor = Color.White
+                        containerColor = SpeakerBlue,
+                        contentColor = ObsidianBg
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp)
+                        .height(50.dp)
                         .testTag("pick_video_button")
                 ) {
                     Icon(
@@ -410,7 +423,7 @@ private fun HeroBadge(label: String, accent: Color) {
     Surface(
         shape = RoundedCornerShape(50),
         color = accent.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.5f))
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
     ) {
         Text(
             text = label,
@@ -424,6 +437,7 @@ private fun HeroBadge(label: String, accent: Color) {
 @Composable
 private fun StudioTopBar(
     videoName: String,
+    modeBadge: String,
     hasVideo: Boolean,
     onPickVideo: () -> Unit
 ) {
@@ -435,7 +449,7 @@ private fun StudioTopBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -448,19 +462,36 @@ private fun StudioTopBar(
                     painter = painterResource(id = R.drawable.app_icon_fg_1795466465872),
                     contentDescription = stringResource(R.string.cd_app_logo),
                     modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(9.dp))
                 )
                 Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.studio_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = SurfaceCard,
+                            border = BorderStroke(1.dp, BorderSubtle)
+                        ) {
+                            Text(
+                                text = modeBadge,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SpeakerBlue,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     Text(
-                        text = stringResource(R.string.studio_title),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = if (hasVideo) videoName else "Авто-монтаж 9:16 • Reels / Shorts",
+                        text = if (hasVideo) videoName else "Авто-монтаж 9:16 • Shorts / Reels",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (hasVideo) ElectricCyan else TextSecondary,
+                        color = TextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -476,14 +507,14 @@ private fun StudioTopBar(
                     Icon(
                         imageVector = Icons.Rounded.VideoLibrary,
                         contentDescription = null,
-                        tint = NeonPurple,
-                        modifier = Modifier.size(18.dp)
+                        tint = SpeakerPink,
+                        modifier = Modifier.size(17.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = stringResource(R.string.action_replace_video),
                         style = MaterialTheme.typography.labelMedium,
-                        color = ElectricCyan
+                        color = SpeakerBlue
                     )
                 }
             }
@@ -496,6 +527,7 @@ private fun EditorToolsColumn(
     state: EditorUiState,
     viewModel: EditorViewModel,
     onToggleSpeech: () -> Unit,
+    onPickReactionClip: () -> Unit,
     onPickAdImage: () -> Unit,
     onPickAdAudio: () -> Unit,
     modifier: Modifier = Modifier
@@ -505,7 +537,7 @@ private fun EditorToolsColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             items(EditorTab.entries) { tab ->
@@ -514,31 +546,35 @@ private fun EditorToolsColumn(
                     EditorTab.MODE -> Icons.Rounded.Bolt
                     EditorTab.SLICES -> Icons.Rounded.ContentCut
                     EditorTab.CAPTIONS -> Icons.Rounded.Subtitles
-                    EditorTab.EFFECTS -> Icons.Rounded.AutoFixHigh
+                    EditorTab.FRAMING -> Icons.Rounded.CenterFocusStrong
                     EditorTab.AD -> Icons.Rounded.Campaign
+                }
+                val accent = when (tab) {
+                    EditorTab.CAPTIONS, EditorTab.AD -> SpeakerPink
+                    else -> SpeakerBlue
                 }
                 Surface(
                     onClick = { viewModel.selectTab(tab) },
                     shape = RoundedCornerShape(12.dp),
-                    color = if (selected) NeonPurple.copy(alpha = 0.24f) else SurfaceCard,
+                    color = if (selected) accent.copy(alpha = 0.18f) else SurfaceDark,
                     border = BorderStroke(
-                        width = if (selected) 1.5.dp else 1.dp,
-                        color = if (selected) ElectricCyan else BorderSubtle
+                        width = if (selected) 1.4.dp else 1.dp,
+                        color = if (selected) accent else BorderSubtle
                     ),
                     modifier = Modifier
-                        .height(44.dp)
+                        .height(42.dp)
                         .testTag("tab_${tab.name.lowercase()}")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
+                        modifier = Modifier.padding(horizontal = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = if (selected) ElectricCyan else TextSecondary,
-                            modifier = Modifier.size(17.dp)
+                            tint = if (selected) accent else TextSecondary,
+                            modifier = Modifier.size(16.dp)
                         )
                         Text(
                             text = tab.titleRu,
@@ -562,18 +598,22 @@ private fun EditorToolsColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(14.dp)
+                    .padding(12.dp)
             ) {
                 when (state.activeTab) {
                     EditorTab.MODE -> ModeSelectorTab(
-                        selectedMode = state.editMode,
-                        onSelectMode = viewModel::selectEditMode
+                        state = state,
+                        onSelectMode = viewModel::selectEditMode,
+                        onUpdateMeme = viewModel::updateMemeConfig,
+                        onPickReactionClip = onPickReactionClip,
+                        onClearReactionClip = viewModel::clearReactionClip
                     )
 
                     EditorTab.SLICES -> SlicesTimelineTab(
                         state = state,
                         onSilenceThresholdChange = viewModel::updateSilenceThreshold,
                         onSelectClip = viewModel::selectClip,
+                        onToggleClipCloseUp = viewModel::toggleClipCloseUp,
                         onSplitClip = viewModel::splitClip,
                         onDeleteClip = viewModel::deleteClip,
                         onResetSlices = viewModel::resetSlices
@@ -584,12 +624,13 @@ private fun EditorToolsColumn(
                         onToggleCaptions = viewModel::toggleCaptionsEnabled,
                         onTranscriptChange = viewModel::updateTranscriptText,
                         onStartStopVoice = onToggleSpeech,
-                        onCycleChunkColor = viewModel::cycleCaptionColor
+                        onCycleChunkColor = viewModel::cycleCaptionColor,
+                        onSeekToWord = viewModel::seekEditedMs
                     )
 
-                    EditorTab.EFFECTS -> EffectsEditorTab(
-                        effects = state.effects,
-                        onUpdateEffects = viewModel::updateEffects
+                    EditorTab.FRAMING -> CameraFramingTab(
+                        framing = state.framing,
+                        onUpdateFraming = viewModel::updateFraming
                     )
 
                     EditorTab.AD -> AdBannerEditorTab(
@@ -604,7 +645,8 @@ private fun EditorToolsColumn(
                         onAreaPercentChange = viewModel::setAdAreaPercent,
                         onUseTtsChange = viewModel::setAdUseTts,
                         onTtsTextChange = viewModel::setAdTtsText,
-                        onPreviewTts = viewModel::previewAdTts
+                        onPreviewTts = viewModel::previewAdTts,
+                        onTestAdPause = viewModel::testAdPausePreview
                     )
                 }
             }

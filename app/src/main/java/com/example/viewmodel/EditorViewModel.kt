@@ -1,6 +1,7 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
@@ -10,13 +11,14 @@ import com.example.media.AudioAnalyzer
 import com.example.media.SpeechCaptioner
 import com.example.media.SubtitleEngine
 import com.example.media.VideoExporter
-import com.example.model.CaptionColor
 import com.example.model.EditMode
 import com.example.model.EditorTab
 import com.example.model.EditorUiState
-import com.example.model.EffectsConfig
 import com.example.model.ExportState
+import com.example.model.FramingConfig
+import com.example.model.MemeConfig
 import com.example.model.VideoClip
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -49,12 +52,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         },
         onFinalResult = { text ->
             val current = _uiState.value.rawTranscriptText.trim()
-            val combined = if (current.isEmpty()) text else "$current $text"
+            val combined = if (current.isEmpty()) text else "$current\n$text"
             updateTranscriptText(combined)
             _uiState.update {
                 it.copy(
                     speechPartialText = "",
-                    speechStatusMessage = "Речь распознана и разбита на субтитры"
+                    speechStatusMessage = "Речь распознана (ru-RU) и разбита по 1 слову"
                 )
             }
         },
@@ -73,9 +76,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun selectEditMode(mode: EditMode) {
         _uiState.update { state ->
             val updatedCaptions = if (state.rawTranscriptText.isNotBlank()) {
-                SubtitleEngine.generateChunksFromRussianText(
+                SubtitleEngine.generateSingleWordCaptions(
                     state.rawTranscriptText,
-                    state.totalEditedContentMs.coerceAtLeast(1000L),
+                    state.totalMainContentMs.coerceAtLeast(1000L),
                     mode
                 )
             } else {
@@ -83,7 +86,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             }
             state.copy(
                 editMode = mode,
-                effects = mode.defaultEffects,
+                framing = mode.defaultFraming.copy(
+                    focalX = state.framing.focalX,
+                    focalY = state.framing.focalY
+                ),
+                meme = state.meme.copy(topBarEnabled = mode.enablesMemeBar),
                 silenceThreshold = mode.defaultSilenceThreshold,
                 captions = updatedCaptions
             )
@@ -95,7 +102,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onVideoSelected(uri: Uri) {
         stopPlayback()
-        val displayName = resolveDisplayName(uri) ?: "Видео.mp4"
+        val displayName = resolveDisplayName(uri) ?: "Видео_9x16.mp4"
         _uiState.update {
             it.copy(
                 videoUri = uri,
@@ -121,12 +128,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }.onSuccess { result ->
                 rmsEnvelopeArray = result.rmsEnvelope
-                val totalEdited = result.clips.sumOf { it.durationMs }.coerceAtLeast(500L)
-                val defaultAdTrigger = (totalEdited / 2L).coerceAtLeast(500L)
+                val totalMain = result.clips.sumOf { it.durationMs }.coerceAtLeast(500L)
+                val defaultAdTrigger = (totalMain / 2L).coerceAtLeast(500L)
                 val regeneratedCaptions = if (_uiState.value.rawTranscriptText.isNotBlank()) {
-                    SubtitleEngine.generateChunksFromRussianText(
+                    SubtitleEngine.generateSingleWordCaptions(
                         _uiState.value.rawTranscriptText,
-                        totalEdited,
+                        totalMain,
                         _uiState.value.editMode
                     )
                 } else {
@@ -139,27 +146,27 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         videoWidth = result.width,
                         videoHeight = result.height,
                         videoRotation = result.rotation,
-                        rmsEnvelope = downsampleForUi(result.rmsEnvelope, 96),
+                        rmsEnvelope = downsampleForUi(result.rmsEnvelope, 88),
                         rmsWindowMs = result.windowMs,
                         audioPeaks = result.peaks,
                         clips = result.clips,
                         selectedClipId = result.clips.firstOrNull()?.id,
                         captions = regeneratedCaptions,
-                        adBanner = state.adBanner.copy(
-                            triggerAtMs = defaultAdTrigger
-                        )
+                        adBanner = state.adBanner.copy(triggerAtMs = defaultAdTrigger)
                     )
                 }
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
                         isAnalyzing = false,
-                        analysisError = "Не удалось проанализировать видео: ${err.localizedMessage ?: "неизвестная ошибка"}"
+                        analysisError = "Не удалось проанализировать видео: ${err.localizedMessage ?: "ошибка файла"}"
                     )
                 }
             }
         }
     }
+
+    // ---- Auto-Slicing & Clips ----
 
     fun updateSilenceThreshold(threshold: Float) {
         val clamped = threshold.coerceIn(0.03f, 0.45f)
@@ -187,6 +194,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         var offset = 0L
         for (clip in clips) {
             if (clip.id == clipId) {
+                adTriggerConsumedForRun = offset > _uiState.value.adBanner.triggerAtMs
                 _uiState.update {
                     it.copy(
                         selectedClipId = clipId,
@@ -197,6 +205,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 return
             }
             offset += clip.durationMs
+        }
+    }
+
+    fun toggleClipCloseUp(clipId: String) {
+        _uiState.update { state ->
+            state.copy(
+                clips = state.clips.map { clip ->
+                    if (clip.id == clipId) clip.copy(isCloseUp = !clip.isCloseUp) else clip
+                }
+            )
         }
     }
 
@@ -214,7 +232,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         )
         val second = target.copy(
             id = UUID.randomUUID().toString(),
-            startMs = midMs
+            startMs = midMs,
+            isCloseUp = !target.isCloseUp // Alternate framing automatically on split!
         )
         val updated = clips.toMutableList().apply {
             removeAt(idx)
@@ -222,12 +241,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             add(idx, first)
         }.mapIndexed { i, c -> c.copy(label = "Часть ${i + 1}") }
 
-        applyUpdatedClips(updated, selectedId = first.id)
-    }
-
-    fun splitSelectedClip() {
-        val targetId = _uiState.value.selectedClipId ?: _uiState.value.clips.firstOrNull()?.id ?: return
-        splitClip(targetId)
+        applyUpdatedClips(updated, selectedId = second.id)
     }
 
     fun deleteClip(clipId: String) {
@@ -243,42 +257,32 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         resliceClips(_uiState.value.silenceThreshold, _uiState.value.editMode.defaultMinSilenceMs)
     }
 
-    fun restoreFullVideoClip() {
-        val dur = _uiState.value.sourceDurationMs
-        if (dur <= 0L) return
-        val full = VideoClip(
-            id = UUID.randomUUID().toString(),
-            startMs = 0L,
-            endMs = dur,
-            peakIntensity = 0.8f,
-            label = "Часть 1"
-        )
-        applyUpdatedClips(listOf(full), selectedId = full.id)
-    }
-
     private fun applyUpdatedClips(newClips: List<VideoClip>, selectedId: String? = null) {
-        val totalEdited = newClips.sumOf { it.durationMs }.coerceAtLeast(300L)
+        val totalMain = newClips.sumOf { it.durationMs }.coerceAtLeast(300L)
         _uiState.update { state ->
             val nextCaptions = if (state.rawTranscriptText.isNotBlank()) {
-                SubtitleEngine.generateChunksFromRussianText(
+                SubtitleEngine.generateSingleWordCaptions(
                     state.rawTranscriptText,
-                    totalEdited,
+                    totalMain,
                     state.editMode
                 )
             } else {
                 state.captions
             }
+            val totalAll = totalMain + state.activeReactionDurationMs
             state.copy(
                 clips = newClips,
                 selectedClipId = selectedId ?: newClips.firstOrNull()?.id,
-                currentEditedMs = state.currentEditedMs.coerceIn(0L, totalEdited),
+                currentEditedMs = state.currentEditedMs.coerceIn(0L, totalAll),
                 captions = nextCaptions,
                 adBanner = state.adBanner.copy(
-                    triggerAtMs = state.adBanner.triggerAtMs.coerceIn(200L, max(200L, totalEdited - 200L))
+                    triggerAtMs = state.adBanner.triggerAtMs.coerceIn(200L, max(200L, totalAll - 200L))
                 )
             )
         }
     }
+
+    // ---- Single-Word Captions ----
 
     fun toggleCaptionsEnabled(enabled: Boolean) {
         _uiState.update { it.copy(captionsEnabled = enabled) }
@@ -286,25 +290,25 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateTranscriptText(text: String) {
         val state = _uiState.value
-        val totalMs = state.totalEditedContentMs.coerceAtLeast(3000L)
-        val chunks = SubtitleEngine.generateChunksFromRussianText(text, totalMs, state.editMode)
+        val totalMs = state.totalMainContentMs.coerceAtLeast(3000L)
+        val chunks = SubtitleEngine.generateSingleWordCaptions(text, totalMs, state.editMode)
         _uiState.update {
             it.copy(
                 rawTranscriptText = text,
                 captions = chunks,
-                captionsEnabled = true
+                captionsEnabled = true,
+                speechStatusMessage = null
             )
         }
     }
 
     fun cycleCaptionColor(chunkId: String) {
-        val colors = CaptionColor.entries
         _uiState.update { state ->
             state.copy(
                 captions = state.captions.map { chunk ->
                     if (chunk.id == chunkId) {
-                        val nextIdx = (colors.indexOf(chunk.color) + 1) % colors.size
-                        chunk.copy(color = colors[nextIdx])
+                        val nextColor = SubtitleEngine.nextColorForMode(chunk.color, state.editMode)
+                        chunk.copy(color = nextColor)
                     } else {
                         chunk
                     }
@@ -313,24 +317,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun updateCaptionText(chunkId: String, newText: String) {
-        _uiState.update { state ->
-            state.copy(
-                captions = state.captions.map { chunk ->
-                    if (chunk.id == chunkId) chunk.copy(text = newText.uppercase()) else chunk
-                }
-            )
-        }
-    }
-
-    fun deleteCaption(chunkId: String) {
-        _uiState.update { state ->
-            state.copy(captions = state.captions.filterNot { it.id == chunkId })
-        }
-    }
-
     fun startRussianSpeechRecognition() {
-        _uiState.update { it.copy(speechStatusMessage = "Говорите по-русски...") }
+        _uiState.update { it.copy(speechStatusMessage = "Слушаю русскую речь (ru-RU)...") }
         speechCaptioner.startListeningRussian()
     }
 
@@ -340,13 +328,76 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onSpeechPermissionDenied() {
         _uiState.update {
-            it.copy(speechStatusMessage = "Разрешение на микрофон отклонено. Введите текст субтитров вручную.")
+            it.copy(speechStatusMessage = "Нет доступа к микрофону. Вставьте текст ниже — слова разобьются автоматически.")
         }
     }
 
-    fun updateEffects(transform: (EffectsConfig) -> EffectsConfig) {
-        _uiState.update { it.copy(effects = transform(it.effects)) }
+    // ---- Smart Camera Framing ----
+
+    fun updateFraming(transform: (FramingConfig) -> FramingConfig) {
+        _uiState.update { it.copy(framing = transform(it.framing)) }
     }
+
+    fun updateFocalPoint(x: Float, y: Float) {
+        _uiState.update {
+            it.copy(
+                framing = it.framing.copy(
+                    focalX = x.coerceIn(0.15f, 0.85f),
+                    focalY = y.coerceIn(0.15f, 0.85f)
+                )
+            )
+        }
+    }
+
+    // ---- Meme Top Bar & End Reaction Clip ----
+
+    fun updateMemeConfig(transform: (MemeConfig) -> MemeConfig) {
+        _uiState.update { it.copy(meme = transform(it.meme)) }
+    }
+
+    fun onReactionClipSelected(uri: Uri) {
+        val name = resolveDisplayName(uri) ?: "Мем_реакция.mp4"
+        viewModelScope.launch {
+            val durMs = withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(appContext, uri)
+                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toLongOrNull() ?: 3000L
+                } catch (_: Throwable) {
+                    3000L
+                } finally {
+                    runCatching { retriever.release() }
+                }
+            }.coerceIn(500L, 20_000L)
+
+            _uiState.update { state ->
+                state.copy(
+                    meme = state.meme.copy(
+                        reactionClipUri = uri,
+                        reactionClipName = name,
+                        reactionClipDurationMs = durMs
+                    )
+                )
+            }
+        }
+    }
+
+    fun clearReactionClip() {
+        _uiState.update { state ->
+            val nextTotal = state.totalMainContentMs
+            state.copy(
+                meme = state.meme.copy(
+                    reactionClipUri = null,
+                    reactionClipName = "",
+                    reactionClipDurationMs = 0L
+                ),
+                currentEditedMs = state.currentEditedMs.coerceAtMost(nextTotal)
+            )
+        }
+    }
+
+    // ---- Mid-Roll Ad Banner ----
 
     fun setAdBannerEnabled(enabled: Boolean) {
         _uiState.update { it.copy(adBanner = it.adBanner.copy(enabled = enabled)) }
@@ -354,23 +405,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onAdImageSelected(uri: Uri) {
         _uiState.update {
-            it.copy(
-                adBanner = it.adBanner.copy(
-                    imageUri = uri,
-                    enabled = true
-                )
-            )
+            it.copy(adBanner = it.adBanner.copy(imageUri = uri, enabled = true))
         }
     }
 
     fun clearAdImage() {
         _uiState.update {
-            it.copy(
-                adBanner = it.adBanner.copy(
-                    imageUri = null,
-                    enabled = false
-                )
-            )
+            it.copy(adBanner = it.adBanner.copy(imageUri = null, enabled = false))
         }
     }
 
@@ -389,12 +430,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearAdAudio() {
         _uiState.update {
-            it.copy(
-                adBanner = it.adBanner.copy(
-                    audioUri = null,
-                    audioDisplayName = ""
-                )
-            )
+            it.copy(adBanner = it.adBanner.copy(audioUri = null, audioDisplayName = ""))
         }
     }
 
@@ -418,53 +454,41 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAdUseTts(useTts: Boolean) {
-        _uiState.update {
-            it.copy(adBanner = it.adBanner.copy(useTts = useTts))
-        }
+        _uiState.update { it.copy(adBanner = it.adBanner.copy(useTts = useTts)) }
     }
 
     fun setAdTtsText(text: String) {
         _uiState.update {
-            it.copy(
-                adBanner = it.adBanner.copy(
-                    ttsText = text,
-                    synthesizedTtsPath = null
-                )
-            )
+            it.copy(adBanner = it.adBanner.copy(ttsText = text, synthesizedTtsPath = null))
         }
-    }
-
-    fun updateAdBanner(transform: (com.example.model.AdBannerConfig) -> com.example.model.AdBannerConfig) {
-        _uiState.update { it.copy(adBanner = transform(it.adBanner)) }
     }
 
     fun previewAdTts() {
         val text = _uiState.value.adBanner.ttsText
-        if (text.isNotBlank()) {
-            ttsSynthesizer.speakPreview(text)
-        }
+        if (text.isNotBlank()) ttsSynthesizer.speakPreview(text)
     }
 
-    fun triggerManualAdPreview() {
+    fun testAdPausePreview() {
         val state = _uiState.value
-        val adCfg = state.adBanner
-        if (adCfg.imageUri == null || state.videoUri == null) return
-        val targetMs = adCfg.triggerAtMs.coerceIn(0L, state.totalEditedContentMs)
+        if (state.videoUri == null || state.adBanner.imageUri == null) return
+        val trigger = state.adBanner.triggerAtMs.coerceIn(0L, state.totalEditedContentMs)
         adTriggerConsumedForRun = true
-        if (adCfg.useTts && adCfg.ttsText.isNotBlank()) {
-            ttsSynthesizer.speakPreview(adCfg.ttsText)
+        if (state.adBanner.useTts && state.adBanner.ttsText.isNotBlank()) {
+            ttsSynthesizer.speakPreview(state.adBanner.ttsText)
         }
         _uiState.update {
             it.copy(
-                currentEditedMs = targetMs,
+                currentEditedMs = trigger,
                 isPlaying = true,
                 isAdPauseActive = true,
-                adRemainingMs = adCfg.durationSec * 1000L,
+                adRemainingMs = state.adBanner.durationSec * 1000L,
                 adElapsedMs = 0L
             )
         }
-        startPlayback(preserveAdPause = true)
+        launchPlaybackLoop()
     }
+
+    // ---- Live Playback Loop (60fps smooth timeline clock) ----
 
     fun togglePlayPause() {
         if (_uiState.value.isPlaying) {
@@ -487,35 +511,41 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun startPlayback(preserveAdPause: Boolean = false) {
+    private fun startPlayback() {
         val state = _uiState.value
         if (state.videoUri == null || state.clips.isEmpty()) return
 
-        if (!preserveAdPause) {
-            val total = state.totalEditedContentMs
-            val startMs = if (state.currentEditedMs >= total - 100L) 0L else state.currentEditedMs
-            adTriggerConsumedForRun = startMs > state.adBanner.triggerAtMs
+        val total = state.totalEditedContentMs
+        val startMs = if (state.currentEditedMs >= total - 100L) 0L else state.currentEditedMs
+        adTriggerConsumedForRun = startMs > state.adBanner.triggerAtMs
 
-            _uiState.update {
-                it.copy(
-                    isPlaying = true,
-                    currentEditedMs = startMs,
-                    isAdPauseActive = false
-                )
-            }
+        _uiState.update {
+            it.copy(
+                isPlaying = true,
+                currentEditedMs = startMs,
+                isAdPauseActive = false
+            )
         }
+        launchPlaybackLoop()
+    }
 
+    private fun launchPlaybackLoop() {
         playbackJob?.cancel()
         playbackJob = viewModelScope.launch {
-            val tickMs = 33L
+            val tickMs = 16L // ~60fps smooth pop-in & timer updates
+            var lastWallMs = System.currentTimeMillis()
             while (isActive) {
                 delay(tickMs)
+                val now = System.currentTimeMillis()
+                val dt = (now - lastWallMs).coerceIn(1L, 80L)
+                lastWallMs = now
+
                 val cur = _uiState.value
                 if (!cur.isPlaying) break
 
                 if (cur.isAdPauseActive) {
-                    val nextRemaining = (cur.adRemainingMs - tickMs).coerceAtLeast(0L)
-                    val nextElapsed = cur.adElapsedMs + tickMs
+                    val nextRemaining = (cur.adRemainingMs - dt).coerceAtLeast(0L)
+                    val nextElapsed = cur.adElapsedMs + dt
                     if (nextRemaining <= 0L) {
                         ttsSynthesizer.stop()
                         _uiState.update {
@@ -536,7 +566,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     continue
                 }
 
-                val nextEditedMs = cur.currentEditedMs + tickMs
+                val nextEditedMs = cur.currentEditedMs + dt
                 val adCfg = cur.adBanner
                 val shouldTriggerAd = adCfg.enabled &&
                     adCfg.imageUri != null &&
@@ -572,7 +602,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     adTriggerConsumedForRun = false
                     break
                 } else {
-                    val activeClipId = SubtitleEngine.mapEditedMsToSource(nextEditedMs, cur.clips)?.clip?.id
+                    val pos = SubtitleEngine.mapEditedMsToTimeline(
+                        nextEditedMs,
+                        cur.clips,
+                        cur.activeReactionDurationMs
+                    )
+                    val activeClipId = (pos as? SubtitleEngine.TimelinePosition.MainClip)?.clip?.id
                     _uiState.update {
                         it.copy(
                             currentEditedMs = nextEditedMs,
@@ -596,6 +631,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // ---- Export Full Video & Export All Clips ----
+
     fun exportFullVideo() {
         val state = _uiState.value
         val uri = state.videoUri ?: return
@@ -608,7 +645,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     exportState = ExportState.Exporting(
                         progress = 0.02f,
-                        statusText = "Подготовка экспорта..."
+                        statusText = "Подготовка экспорта 9:16..."
                     )
                 )
             }
@@ -634,7 +671,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     peaks = state.audioPeaks,
                     captions = state.captions,
                     captionsEnabled = state.captionsEnabled,
-                    effects = state.effects,
+                    framing = state.framing,
+                    meme = state.meme,
                     adBanner = adConfig,
                     onProgress = { progress, text ->
                         _uiState.update {
@@ -685,7 +723,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     peaks = state.audioPeaks,
                     captions = state.captions,
                     captionsEnabled = state.captionsEnabled,
-                    effects = state.effects,
+                    framing = state.framing,
+                    meme = state.meme,
                     onProgress = { progress, text, curPart, totalParts ->
                         _uiState.update {
                             it.copy(
@@ -717,7 +756,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun cancelExport() {
         exportJob?.cancel()
-        _uiState.update { it.copy(exportState = ExportState.Idle) }
+        _uiState.update { it.copy(exportState = ExportState.Idle, isTtsSynthesizing = false) }
     }
 
     fun dismissExportDialog() {

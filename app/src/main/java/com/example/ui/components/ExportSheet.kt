@@ -48,11 +48,12 @@ import com.example.R
 import com.example.media.SubtitleEngine
 import com.example.model.ExportState
 import com.example.model.ExportedVideo
+import com.example.ui.theme.AccentGreen
 import com.example.ui.theme.BorderSubtle
-import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.HotCoral
-import com.example.ui.theme.NeonGreen
-import com.example.ui.theme.NeonPurple
+import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.SpeakerBlue
+import com.example.ui.theme.SpeakerPink
 import com.example.ui.theme.SurfaceCard
 import com.example.ui.theme.SurfaceDark
 import com.example.ui.theme.TextPrimary
@@ -81,9 +82,10 @@ fun ExportActionDock(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Button 1: «Скачать готовый ролик»
-            val gradient = Brush.horizontalGradient(listOf(NeonPurple, ElectricCyan))
+            val gradient = Brush.horizontalGradient(listOf(SpeakerPink, SpeakerBlue))
             val enabled = hasVideo && clipCount > 0 && !isBusy
+
+            // Button 1: «Скачать готовый ролик»
             Button(
                 onClick = onExportFull,
                 enabled = enabled,
@@ -91,18 +93,18 @@ fun ExportActionDock(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.Transparent,
                     disabledContainerColor = SurfaceCard,
-                    contentColor = Color.White
+                    contentColor = ObsidianBg
                 ),
                 contentPadding = PaddingValues(0.dp),
                 modifier = Modifier
                     .weight(1.35f)
-                    .height(52.dp)
+                    .height(50.dp)
                     .testTag("export_full_button")
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp)
+                        .height(50.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(
                             if (enabled) gradient
@@ -118,14 +120,14 @@ fun ExportActionDock(
                         Icon(
                             imageVector = Icons.Rounded.Download,
                             contentDescription = null,
-                            tint = if (enabled) Color.White else TextSecondary,
+                            tint = if (enabled) ObsidianBg else TextSecondary,
                             modifier = Modifier.size(19.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = stringResource(R.string.action_export_full),
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (enabled) Color.White else TextSecondary,
+                            color = if (enabled) ObsidianBg else TextSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -140,25 +142,25 @@ fun ExportActionDock(
                 shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(
                     1.2.dp,
-                    if (enabled) ElectricCyan else BorderSubtle
+                    if (enabled) SpeakerBlue else BorderSubtle
                 ),
                 contentPadding = PaddingValues(horizontal = 10.dp),
                 modifier = Modifier
                     .weight(1f)
-                    .height(52.dp)
+                    .height(50.dp)
                     .testTag("export_parts_button")
             ) {
                 Icon(
                     imageVector = Icons.Rounded.MovieFilter,
                     contentDescription = null,
-                    tint = if (enabled) ElectricCyan else TextSecondary,
+                    tint = if (enabled) SpeakerBlue else TextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
                     text = if (clipCount > 1) "Все части ($clipCount)" else stringResource(R.string.action_export_clips),
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (enabled) ElectricCyan else TextSecondary,
+                    color = if (enabled) SpeakerBlue else TextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -211,7 +213,7 @@ fun ExportStatusDialog(
                         )
                         LinearProgressIndicator(
                             progress = { exportState.progress.coerceIn(0f, 1f) },
-                            color = ElectricCyan,
+                            color = SpeakerBlue,
                             trackColor = BorderSubtle,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -221,7 +223,7 @@ fun ExportStatusDialog(
                         Text(
                             text = "${(exportState.progress * 100).toInt()}%",
                             style = MaterialTheme.typography.labelSmall,
-                            color = ElectricCyan
+                            color = SpeakerBlue
                         )
                     }
                 },
@@ -241,7 +243,7 @@ fun ExportStatusDialog(
                     Icon(
                         imageVector = Icons.Rounded.CheckCircle,
                         contentDescription = null,
-                        tint = NeonGreen,
+                        tint = AccentGreen,
                         modifier = Modifier.size(36.dp)
                     )
                 },
@@ -258,7 +260,7 @@ fun ExportStatusDialog(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "Файлы сохранены в Галерее (Movies/ReelsCut). Вы можете сразу отправить их в Reels, Shorts или TikTok:",
+                            text = "Файлы сохранены в Галерее (Movies/ReelsCut):",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -287,14 +289,14 @@ fun ExportStatusDialog(
                                         Text(
                                             text = "Длительность: ${SubtitleEngine.formatTimeMs(vid.durationMs)}",
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = ElectricCyan
+                                            color = SpeakerBlue
                                         )
                                     }
                                     IconButton(onClick = { shareVideo(vid) }) {
                                         Icon(
                                             imageVector = Icons.Rounded.Share,
                                             contentDescription = stringResource(R.string.cd_share_video),
-                                            tint = ElectricCyan
+                                            tint = SpeakerBlue
                                         )
                                     }
                                 }
@@ -305,9 +307,9 @@ fun ExportStatusDialog(
                 confirmButton = {
                     Button(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonPurple, contentColor = Color.White)
+                        colors = ButtonDefaults.buttonColors(containerColor = SpeakerBlue, contentColor = ObsidianBg)
                     ) {
-                        Text("Отлично")
+                        Text("Готово")
                     }
                 }
             )

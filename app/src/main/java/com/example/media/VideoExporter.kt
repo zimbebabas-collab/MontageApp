@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -28,8 +29,9 @@ import com.example.R
 import com.example.model.AdBannerConfig
 import com.example.model.AudioPeak
 import com.example.model.CaptionChunk
-import com.example.model.EffectsConfig
 import com.example.model.ExportedVideo
+import com.example.model.FramingConfig
+import com.example.model.MemeConfig
 import com.example.model.VideoClip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -54,7 +56,7 @@ object VideoExporter {
     private const val OUT_WIDTH = 720
     private const val OUT_HEIGHT = 1280
     private const val OUT_FPS = 24
-    private const val VIDEO_BITRATE = 4_200_000
+    private const val VIDEO_BITRATE = 4_500_000
     private const val AUDIO_SAMPLE_RATE = 44100
     private const val AUDIO_CHANNELS = 2
     private const val AUDIO_BITRATE = 128_000
@@ -66,7 +68,8 @@ object VideoExporter {
         peaks: List<AudioPeak>,
         captions: List<CaptionChunk>,
         captionsEnabled: Boolean,
-        effects: EffectsConfig,
+        framing: FramingConfig,
+        meme: MemeConfig,
         adBanner: AdBannerConfig,
         onProgress: (Float, String) -> Unit
     ): ExportedVideo = withContext(Dispatchers.IO) {
@@ -78,7 +81,9 @@ object VideoExporter {
             clips = clips,
             peaks = peaks,
             captions = if (captionsEnabled) captions else emptyList(),
-            effects = effects,
+            framing = framing,
+            meme = meme,
+            includeReactionClip = meme.reactionClipUri != null && meme.reactionClipDurationMs > 0L,
             adBanner = adBanner,
             includeAdBanner = adBanner.enabled && adBanner.imageUri != null,
             outputDisplayName = fileName,
@@ -93,7 +98,8 @@ object VideoExporter {
         peaks: List<AudioPeak>,
         captions: List<CaptionChunk>,
         captionsEnabled: Boolean,
-        effects: EffectsConfig,
+        framing: FramingConfig,
+        meme: MemeConfig,
         onProgress: (Float, String, Int, Int) -> Unit
     ): List<ExportedVideo> = withContext(Dispatchers.IO) {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -126,7 +132,9 @@ object VideoExporter {
                 clips = listOf(clip),
                 peaks = peaks,
                 captions = shiftedCaptions,
-                effects = effects,
+                framing = framing,
+                meme = meme,
+                includeReactionClip = false,
                 adBanner = AdBannerConfig(enabled = false),
                 includeAdBanner = false,
                 outputDisplayName = "ReelsCut_Part${partNum}_$timestamp.mp4",
@@ -151,7 +159,9 @@ object VideoExporter {
         clips: List<VideoClip>,
         peaks: List<AudioPeak>,
         captions: List<CaptionChunk>,
-        effects: EffectsConfig,
+        framing: FramingConfig,
+        meme: MemeConfig,
+        includeReactionClip: Boolean,
         adBanner: AdBannerConfig,
         includeAdBanner: Boolean,
         outputDisplayName: String,
@@ -159,8 +169,14 @@ object VideoExporter {
     ): ExportedVideo {
         require(clips.isNotEmpty()) { "Нет клипов для экспорта" }
 
-        val totalContentMs = clips.sumOf { it.durationMs }.coerceAtLeast(300L)
-        val adDurationMs = if (includeAdBanner) (adBanner.durationSec.coerceIn(2, 12) * 1000L) else 0L
+        val mainContentMs = clips.sumOf { it.durationMs }.coerceAtLeast(300L)
+        val reactionDurationMs = if (includeReactionClip && meme.reactionClipUri != null) {
+            meme.reactionClipDurationMs.coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        val totalContentMs = mainContentMs + reactionDurationMs
+        val adDurationMs = if (includeAdBanner) (adBanner.durationSec.coerceIn(3, 8) * 1000L) else 0L
         val adTriggerMs = if (includeAdBanner) {
             adBanner.triggerAtMs.coerceIn(200L, max(200L, totalContentMs - 200L))
         } else {
@@ -172,11 +188,13 @@ object VideoExporter {
         val tempFile = File(exportDir, outputDisplayName)
         if (tempFile.exists()) tempFile.delete()
 
-        onProgress(0.04f, "Подготовка аудиодорожки...")
+        onProgress(0.04f, "Сведение аудиодорожки...")
         val mixedPcm = buildMixedAudioPcm(
             context = context,
             sourceUri = sourceUri,
             clips = clips,
+            reactionUri = if (reactionDurationMs > 0L) meme.reactionClipUri else null,
+            reactionDurationMs = reactionDurationMs,
             includeAd = includeAdBanner,
             adTriggerMs = adTriggerMs,
             adDurationMs = adDurationMs,
@@ -193,14 +211,20 @@ object VideoExporter {
             ResourcesCompat.getFont(context, R.font.montserrat)
         }.getOrNull() ?: Typeface.DEFAULT_BOLD
 
-        val retriever = MediaMetadataRetriever()
+        val mainRetriever = MediaMetadataRetriever()
+        var reactionRetriever: MediaMetadataRetriever? = null
         var videoEncoder: MediaCodec? = null
         var audioEncoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var muxerStarted = false
 
         try {
-            retriever.setDataSource(context, sourceUri)
+            mainRetriever.setDataSource(context, sourceUri)
+            if (reactionDurationMs > 0L && meme.reactionClipUri != null) {
+                reactionRetriever = MediaMetadataRetriever().apply {
+                    setDataSource(context, meme.reactionClipUri)
+                }
+            }
 
             val videoFormat = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -228,10 +252,7 @@ object VideoExporter {
                     AUDIO_SAMPLE_RATE,
                     AUDIO_CHANNELS
                 ).apply {
-                    setInteger(
-                        MediaFormat.KEY_AAC_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AACObjectLC
-                    )
+                    setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                     setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BITRATE)
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
                 }
@@ -241,212 +262,206 @@ object VideoExporter {
             }
 
             muxer = MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
             var videoTrackIndex = -1
             var audioTrackIndex = -1
-            val vBufInfo = MediaCodec.BufferInfo()
-            val aBufInfo = MediaCodec.BufferInfo()
+            val pendingSamples = mutableListOf<Triple<Boolean, ByteArray, MediaCodec.BufferInfo>>()
 
-            // Helper to start muxer once all active tracks have their output formats
-            fun maybeStartMuxer() {
-                if (!muxerStarted && videoTrackIndex >= 0 && (!hasAudio || audioTrackIndex >= 0)) {
-                    muxer.start()
+            fun tryStartMuxer() {
+                if (muxerStarted) return
+                val videoReady = videoTrackIndex >= 0
+                val audioReady = !hasAudio || audioTrackIndex >= 0
+                if (videoReady && audioReady) {
+                    muxer?.start()
                     muxerStarted = true
+                    for ((isVideo, bytes, info) in pendingSamples) {
+                        val track = if (isVideo) videoTrackIndex else audioTrackIndex
+                        if (track >= 0) {
+                            muxer?.writeSampleData(track, ByteBuffer.wrap(bytes), info)
+                        }
+                    }
+                    pendingSamples.clear()
                 }
             }
 
-            // Buffered encoded samples if one track yields output before muxer starts
-            val pendingVideoSamples = mutableListOf<Pair<ByteArray, MediaCodec.BufferInfo>>()
-            val pendingAudioSamples = mutableListOf<Pair<ByteArray, MediaCodec.BufferInfo>>()
-
-            fun flushPendingSamples() {
-                if (!muxerStarted) return
-                if (pendingVideoSamples.isNotEmpty()) {
-                    for ((bytes, info) in pendingVideoSamples) {
-                        muxer.writeSampleData(videoTrackIndex, ByteBuffer.wrap(bytes), info)
-                    }
-                    pendingVideoSamples.clear()
-                }
-                if (pendingAudioSamples.isNotEmpty() && audioTrackIndex >= 0) {
-                    for ((bytes, info) in pendingAudioSamples) {
-                        muxer.writeSampleData(audioTrackIndex, ByteBuffer.wrap(bytes), info)
-                    }
-                    pendingAudioSamples.clear()
-                }
-            }
+            val videoBufInfo = MediaCodec.BufferInfo()
+            val audioBufInfo = MediaCodec.BufferInfo()
 
             fun drainVideoEncoder(endOfStream: Boolean) {
-                if (endOfStream) {
-                    videoEncoder.signalEndOfInputStream()
-                }
+                val enc = videoEncoder ?: return
+                if (endOfStream) enc.signalEndOfInputStream()
                 while (true) {
-                    val outIdx = videoEncoder.dequeueOutputBuffer(vBufInfo, if (endOfStream) 10_000L else 0L)
+                    val outIdx = enc.dequeueOutputBuffer(videoBufInfo, if (endOfStream) 10_000L else 0L)
                     when {
                         outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             if (!endOfStream) break
                         }
-
                         outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            videoTrackIndex = muxer.addTrack(videoEncoder.outputFormat)
-                            maybeStartMuxer()
-                            flushPendingSamples()
+                            if (videoTrackIndex < 0) {
+                                videoTrackIndex = muxer?.addTrack(enc.outputFormat) ?: -1
+                                tryStartMuxer()
+                            }
                         }
-
                         outIdx >= 0 -> {
-                            val outBuf = videoEncoder.getOutputBuffer(outIdx)
-                            if (outBuf != null && vBufInfo.size > 0 &&
-                                (vBufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            val encoded = enc.getOutputBuffer(outIdx)
+                            if (encoded != null && videoBufInfo.size > 0 &&
+                                (videoBufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
                             ) {
-                                outBuf.position(vBufInfo.offset)
-                                outBuf.limit(vBufInfo.offset + vBufInfo.size)
-                                if (muxerStarted) {
-                                    flushPendingSamples()
-                                    muxer.writeSampleData(videoTrackIndex, outBuf, vBufInfo)
+                                encoded.position(videoBufInfo.offset)
+                                encoded.limit(videoBufInfo.offset + videoBufInfo.size)
+                                if (muxerStarted && videoTrackIndex >= 0) {
+                                    muxer?.writeSampleData(videoTrackIndex, encoded, videoBufInfo)
                                 } else {
-                                    val copy = ByteArray(vBufInfo.size)
-                                    outBuf.get(copy)
-                                    val infoCopy = MediaCodec.BufferInfo().apply {
-                                        set(0, copy.size, vBufInfo.presentationTimeUs, vBufInfo.flags)
+                                    val copy = ByteArray(videoBufInfo.size)
+                                    encoded.get(copy)
+                                    val cloneInfo = MediaCodec.BufferInfo().apply {
+                                        set(0, copy.size, videoBufInfo.presentationTimeUs, videoBufInfo.flags)
                                     }
-                                    pendingVideoSamples.add(copy to infoCopy)
+                                    pendingSamples.add(Triple(true, copy, cloneInfo))
                                 }
                             }
-                            videoEncoder.releaseOutputBuffer(outIdx, false)
-                            if ((vBufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                            enc.releaseOutputBuffer(outIdx, false)
+                            if ((videoBufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
                         }
                     }
                 }
             }
 
-            // Encode all audio upfront/interleaved so audioTrackIndex is registered immediately
-            var audioOffset = 0
+            var audioReadPos = 0
+            var audioEosQueued = false
             var audioPtsSamples = 0L
-            var audioEosSent = !hasAudio
-            var audioDone = !hasAudio
 
             fun pumpAudioEncoder(drainToEnd: Boolean) {
-                val aEnc = audioEncoder ?: return
-                while (!audioDone) {
-                    if (!audioEosSent) {
-                        val inIdx = aEnc.dequeueInputBuffer(0L)
+                val enc = audioEncoder ?: return
+                var guard = 0
+                while (guard < (if (drainToEnd) 5000 else 6)) {
+                    guard++
+                    if (!audioEosQueued) {
+                        val inIdx = enc.dequeueInputBuffer(0L)
                         if (inIdx >= 0) {
-                            val inBuf = aEnc.getInputBuffer(inIdx)
+                            val inBuf = enc.getInputBuffer(inIdx)
                             if (inBuf != null) {
                                 inBuf.clear()
-                                val remaining = mixedPcm.size - audioOffset
+                                val remaining = mixedPcm.size - audioReadPos
                                 if (remaining <= 0) {
-                                    aEnc.queueInputBuffer(
-                                        inIdx,
-                                        0,
-                                        0,
-                                        audioPtsSamples * 1_000_000L / AUDIO_SAMPLE_RATE,
+                                    enc.queueInputBuffer(
+                                        inIdx, 0, 0,
+                                        (audioPtsSamples * 1_000_000L) / AUDIO_SAMPLE_RATE,
                                         MediaCodec.BUFFER_FLAG_END_OF_STREAM
                                     )
-                                    audioEosSent = true
+                                    audioEosQueued = true
                                 } else {
-                                    val chunk = min(inBuf.capacity(), remaining)
-                                    inBuf.put(mixedPcm, audioOffset, chunk)
-                                    val ptsUs = audioPtsSamples * 1_000_000L / AUDIO_SAMPLE_RATE
-                                    aEnc.queueInputBuffer(inIdx, 0, chunk, ptsUs, 0)
-                                    audioOffset += chunk
-                                    audioPtsSamples += chunk / (AUDIO_CHANNELS * 2)
+                                    val toWrite = min(remaining, inBuf.capacity())
+                                    val aligned = (toWrite / 4) * 4
+                                    if (aligned > 0) {
+                                        inBuf.put(mixedPcm, audioReadPos, aligned)
+                                        val ptsUs = (audioPtsSamples * 1_000_000L) / AUDIO_SAMPLE_RATE
+                                        enc.queueInputBuffer(inIdx, 0, aligned, ptsUs, 0)
+                                        audioReadPos += aligned
+                                        audioPtsSamples += aligned / (AUDIO_CHANNELS * 2)
+                                    }
                                 }
                             }
                         }
                     }
 
-                    val outIdx = aEnc.dequeueOutputBuffer(aBufInfo, if (drainToEnd) 5_000L else 0L)
+                    val outIdx = enc.dequeueOutputBuffer(audioBufInfo, if (drainToEnd) 5_000L else 0L)
                     when {
                         outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                            if (!drainToEnd) break
+                            if (!drainToEnd || (audioEosQueued && guard > 250)) break
                         }
-
                         outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            audioTrackIndex = muxer.addTrack(aEnc.outputFormat)
-                            maybeStartMuxer()
-                            flushPendingSamples()
+                            if (audioTrackIndex < 0) {
+                                audioTrackIndex = muxer?.addTrack(enc.outputFormat) ?: -1
+                                tryStartMuxer()
+                            }
                         }
-
                         outIdx >= 0 -> {
-                            val outBuf = aEnc.getOutputBuffer(outIdx)
-                            if (outBuf != null && aBufInfo.size > 0 &&
-                                (aBufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            val encoded = enc.getOutputBuffer(outIdx)
+                            if (encoded != null && audioBufInfo.size > 0 &&
+                                (audioBufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
                             ) {
-                                outBuf.position(aBufInfo.offset)
-                                outBuf.limit(aBufInfo.offset + aBufInfo.size)
-                                if (muxerStarted) {
-                                    flushPendingSamples()
-                                    muxer.writeSampleData(audioTrackIndex, outBuf, aBufInfo)
+                                encoded.position(audioBufInfo.offset)
+                                encoded.limit(audioBufInfo.offset + audioBufInfo.size)
+                                if (muxerStarted && audioTrackIndex >= 0) {
+                                    muxer?.writeSampleData(audioTrackIndex, encoded, audioBufInfo)
                                 } else {
-                                    val copy = ByteArray(aBufInfo.size)
-                                    outBuf.get(copy)
-                                    val infoCopy = MediaCodec.BufferInfo().apply {
-                                        set(0, copy.size, aBufInfo.presentationTimeUs, aBufInfo.flags)
+                                    val copy = ByteArray(audioBufInfo.size)
+                                    encoded.get(copy)
+                                    val cloneInfo = MediaCodec.BufferInfo().apply {
+                                        set(0, copy.size, audioBufInfo.presentationTimeUs, audioBufInfo.flags)
                                     }
-                                    pendingAudioSamples.add(copy to infoCopy)
+                                    pendingSamples.add(Triple(false, copy, cloneInfo))
                                 }
                             }
-                            aEnc.releaseOutputBuffer(outIdx, false)
-                            if ((aBufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                                audioDone = true
-                                break
-                            }
+                            enc.releaseOutputBuffer(outIdx, false)
+                            if ((audioBufInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
                         }
                     }
-                    if (!drainToEnd && audioTrackIndex >= 0 && pendingAudioSamples.size > 4) break
                 }
             }
 
-            // Prime audio encoder so audio format is ready quickly
-            if (hasAudio) {
-                pumpAudioEncoder(drainToEnd = false)
+            // Paints matching clean reference style
+            val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+            // Crisp single-word subtitle paint (Montserrat Black + clean dark drop-shadow, NO thick outline)
+            val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.typeface = Typeface.create(typeface, Typeface.BOLD)
+                textSize = 78f
+                textAlign = Paint.Align.CENTER
+                style = Paint.Style.FILL
+                setShadowLayer(14f, 0f, 6f, Color.argb(230, 0, 0, 0))
             }
 
-            // Pre-allocate paints for fast Canvas rendering
-            val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            val fillTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.typeface = Typeface.create(typeface, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                textSize = 64f
-            }
-            val strokeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.typeface = Typeface.create(typeface, Typeface.BOLD)
-                textAlign = Paint.Align.CENTER
-                textSize = 64f
-                style = Paint.Style.STROKE
-                strokeWidth = 14f
-                strokeJoin = Paint.Join.ROUND
+            // Top Black Meme Bar paints
+            val memeBarBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
+                style = Paint.Style.FILL
             }
+            val memeBarTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.typeface = Typeface.create(typeface, Typeface.BOLD)
+                color = Color.WHITE
+                textSize = 42f
+                textAlign = Paint.Align.CENTER
+            }
+
+            // Subtle Vignette paint
             val vignettePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = RadialGradient(
                     OUT_WIDTH / 2f,
                     OUT_HEIGHT / 2f,
-                    OUT_HEIGHT * 0.62f,
-                    intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(145, 0, 0, 0)),
-                    floatArrayOf(0f, 0.55f, 1f),
+                    OUT_HEIGHT * 0.65f,
+                    intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(120, 0, 0, 0)),
+                    floatArrayOf(0f, 0.60f, 1f),
                     Shader.TileMode.CLAMP
                 )
             }
-            val dimPaint = Paint().apply { color = Color.argb(185, 8, 8, 14) }
-            val flashPaint = Paint()
+
+            // Mid-Roll Ad Banner paints (subtle rgba(0,0,0,0.45) dim backdrop)
+            val dimPaint = Paint().apply {
+                color = Color.argb(115, 0, 0, 0) // rgba(0, 0, 0, 0.45)
+            }
             val adBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(180, 255, 255, 255)
                 style = Paint.Style.STROKE
-                strokeWidth = 6f
-                color = Color.parseColor("#00F0FF")
+                strokeWidth = 4f
             }
             val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(220, 168, 85, 247)
+                color = Color.argb(215, 11, 11, 15)
+                style = Paint.Style.FILL
             }
             val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.typeface = Typeface.create(typeface, Typeface.BOLD)
                 color = Color.WHITE
-                textSize = 26f
+                textSize = 24f
                 textAlign = Paint.Align.CENTER
             }
 
             val totalFrames = max(1, ((totalOutputMs * OUT_FPS) / 1000L).toInt())
             var cachedFrame: Bitmap? = null
-            var cachedSourceBucket = -1L
+            var lastFetchedKey = ""
+
+            onProgress(0.08f, "Рендер 9:16 (субтитры, планы, эффекты)...")
 
             for (frameIndex in 0 until totalFrames) {
                 coroutineContext.ensureActive()
@@ -454,95 +469,103 @@ object VideoExporter {
                 val inAdWindow = includeAdBanner &&
                     adTriggerMs >= 0L &&
                     outMs >= adTriggerMs &&
-                    outMs < adTriggerMs + adDurationMs
+                    outMs < (adTriggerMs + adDurationMs)
 
                 val editedContentMs = when {
                     !includeAdBanner || adTriggerMs < 0L -> outMs
                     outMs < adTriggerMs -> outMs
-                    inAdWindow -> adTriggerMs // Freeze-frame exact content timestamp
-                    else -> (outMs - adDurationMs).coerceIn(0L, totalContentMs)
+                    inAdWindow -> adTriggerMs // Freeze-frame on exact trigger timestamp!
+                    else -> (outMs - adDurationMs).coerceAtLeast(0L)
                 }
 
-                val mapping = SubtitleEngine.mapEditedMsToSource(editedContentMs, clips)
-                val sourceMs = mapping?.sourceMs ?: clips.first().startMs
+                val pos = SubtitleEngine.mapEditedMsToTimeline(
+                    editedMs = editedContentMs,
+                    clips = clips,
+                    reactionDurationMs = reactionDurationMs
+                )
 
-                // Sample source video frame (bucketed ~80ms when moving for responsive speed, frozen during ad)
-                val sourceBucket = if (inAdWindow) {
-                    -999L
-                } else {
-                    sourceMs / 42L
-                }
-
-                if (cachedFrame == null || sourceBucket != cachedSourceBucket) {
-                    val fetched = fetchFrameSafe(retriever, sourceMs)
-                    if (fetched != null) {
-                        if (cachedFrame != null && cachedFrame != fetched) {
-                            cachedFrame.recycle()
-                        }
-                        cachedFrame = fetched
-                        cachedSourceBucket = sourceBucket
+                val frameKey: String
+                val fetchedFrame: Bitmap?
+                when (pos) {
+                    is SubtitleEngine.TimelinePosition.MainClip -> {
+                        val quantizedMs = (pos.sourceMs / 42L) * 42L
+                        frameKey = "main_$quantizedMs"
+                        fetchedFrame = if (frameKey != lastFetchedKey) {
+                            fetchFrameSafe(mainRetriever, pos.sourceMs)
+                        } else null
                     }
+                    is SubtitleEngine.TimelinePosition.ReactionClip -> {
+                        val quantizedMs = (pos.reactionMs / 42L) * 42L
+                        frameKey = "react_$quantizedMs"
+                        fetchedFrame = if (frameKey != lastFetchedKey && reactionRetriever != null) {
+                            fetchFrameSafe(reactionRetriever, pos.reactionMs)
+                        } else null
+                    }
+                    null -> {
+                        frameKey = lastFetchedKey
+                        fetchedFrame = null
+                    }
+                }
+
+                if (fetchedFrame != null) {
+                    cachedFrame?.recycle()
+                    cachedFrame = fetchedFrame
+                    lastFetchedKey = frameKey
                 }
 
                 val canvas = inputSurface.lockCanvas(null)
                 try {
-                    canvas.drawColor(Color.parseColor("#0D0D12"))
+                    canvas.drawColor(Color.parseColor("#0B0B0F"))
 
-                    val transform = if (inAdWindow) {
-                        SubtitleEngine.FrameTransform(1f, 0f, 0f, 0f, 0f)
-                    } else {
-                        SubtitleEngine.computeFrameTransform(
-                            sourceMs = sourceMs,
-                            editedMs = editedContentMs,
-                            totalEditedMs = totalContentMs,
+                    val cameraFrame = when {
+                        inAdWindow -> SubtitleEngine.CameraFrameState(1f, framing.focalX, framing.focalY, false)
+                        pos is SubtitleEngine.TimelinePosition.MainClip -> SubtitleEngine.computeCameraFrame(
+                            clip = pos.clip,
+                            sourceMs = pos.sourceMs,
                             peaks = peaks,
-                            effects = effects
+                            framing = framing
                         )
+                        else -> SubtitleEngine.CameraFrameState(1f, 0.5f, 0.5f, false)
                     }
 
-                    // 1. Draw vertical 9:16 cropped video frame with peak zoom/shake
+                    // 1. Draw vertical 9:16 video frame with focal-point close-up framing
                     cachedFrame?.let { bmp ->
-                        drawCenterCropFrame(canvas, bmp, transform, bitmapPaint)
+                        drawCenterCropWithFocalZoom(canvas, bmp, cameraFrame, bitmapPaint)
                     }
 
-                    // 2. Subtle chromatic flash on vocal peak (Meme mode)
-                    if (transform.flashAlpha > 0.01f) {
-                        flashPaint.color = Color.argb(
-                            (transform.flashAlpha * 255).roundToInt().coerceIn(0, 120),
-                            180,
-                            245,
-                            255
-                        )
-                        canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), OUT_HEIGHT.toFloat(), flashPaint)
-                    }
-
-                    // 3. Soft vignette
-                    if (effects.vignette) {
+                    // 2. Optional subtle vignette
+                    if (framing.vignette && pos is SubtitleEngine.TimelinePosition.MainClip) {
                         canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), OUT_HEIGHT.toFloat(), vignettePaint)
                     }
 
-                    // 4. Colored kinetic Russian subtitles in bottom-center safe area
-                    if (!inAdWindow) {
+                    // 3. Top black meme caption bar (when enabled)
+                    if (meme.topBarEnabled && meme.topBarText.isNotBlank() &&
+                        pos is SubtitleEngine.TimelinePosition.MainClip
+                    ) {
+                        drawTopMemeBar(canvas, meme.topBarText.uppercase(), memeBarBgPaint, memeBarTextPaint)
+                    }
+
+                    // 4. Dead-center single-word colored subtitle (50% X, 52% Y) with crisp drop-shadow
+                    if (!inAdWindow && pos is SubtitleEngine.TimelinePosition.MainClip) {
                         val activeCaption = SubtitleEngine.activeCaptionAt(editedContentMs, captions)
                         if (activeCaption != null) {
-                            drawKineticSubtitle(
+                            drawSingleWordCenterSubtitle(
                                 canvas = canvas,
                                 caption = activeCaption,
                                 editedMs = editedContentMs,
-                                fillPaint = fillTextPaint,
-                                strokePaint = strokeTextPaint
+                                paint = subtitlePaint
                             )
                         }
                     }
 
-                    // 5. Mid-roll centered Ad Banner (25%..35% screen area) over dimmed backdrop
+                    // 5. Dead-center mid-roll Ad Banner (25%..35% area) over rgba(0,0,0,0.45) dim
                     if (inAdWindow && adBitmap != null) {
-                        val adRemainingSec = ceilSeconds(adTriggerMs + adDurationMs - outMs)
+                        val remainingSec = ceilSeconds(adTriggerMs + adDurationMs - outMs)
                         drawMidRollAdBanner(
                             canvas = canvas,
                             adBitmap = adBitmap,
                             areaPercent = adBanner.areaPercent.coerceIn(25, 35),
-                            remainingSec = adRemainingSec,
+                            remainingSec = remainingSec,
                             dimPaint = dimPaint,
                             bitmapPaint = bitmapPaint,
                             borderPaint = adBorderPaint,
@@ -570,11 +593,12 @@ object VideoExporter {
             if (hasAudio) {
                 pumpAudioEncoder(drainToEnd = true)
             }
-            flushPendingSamples()
+            tryStartMuxer()
 
             onProgress(0.96f, "Сохранение в галерею...")
         } finally {
-            runCatching { retriever.release() }
+            runCatching { mainRetriever.release() }
+            runCatching { reactionRetriever?.release() }
             runCatching { adBitmap?.recycle() }
             runCatching {
                 videoEncoder?.stop()
@@ -629,63 +653,114 @@ object VideoExporter {
         }.getOrNull()
     }
 
-    private fun drawCenterCropFrame(
+    /**
+     * Draws center-cropped 9:16 video frame and zooms smoothly around (focalX, focalY),
+     * clamping translation so no black bars ever appear around the edges.
+     */
+    private fun drawCenterCropWithFocalZoom(
         canvas: Canvas,
         bitmap: Bitmap,
-        transform: SubtitleEngine.FrameTransform,
+        cam: SubtitleEngine.CameraFrameState,
         paint: Paint
     ) {
         val bw = bitmap.width.toFloat().coerceAtLeast(1f)
         val bh = bitmap.height.toFloat().coerceAtLeast(1f)
         val baseScale = max(OUT_WIDTH / bw, OUT_HEIGHT / bh)
-        val finalScale = baseScale * transform.scale
-        val dx = (OUT_WIDTH - bw * finalScale) / 2f + transform.offsetXFraction * OUT_WIDTH
-        val dy = (OUT_HEIGHT - bh * finalScale) / 2f + transform.offsetYFraction * OUT_HEIGHT
+        val finalScale = baseScale * cam.scale
+
+        val scaledW = bw * finalScale
+        val scaledH = bh * finalScale
+
+        // Center-crop base position, then shift around the chosen focal point
+        val pivotCanvasX = OUT_WIDTH * cam.focalX
+        val pivotCanvasY = OUT_HEIGHT * cam.focalY
+        val baseLeft = (OUT_WIDTH - bw * baseScale) / 2f
+        val baseTop = (OUT_HEIGHT - bh * baseScale) / 2f
+
+        val rawLeft = pivotCanvasX - (pivotCanvasX - baseLeft) * cam.scale
+        val rawTop = pivotCanvasY - (pivotCanvasY - baseTop) * cam.scale
+
+        val minLeft = OUT_WIDTH - scaledW
+        val minTop = OUT_HEIGHT - scaledH
+        val clampedLeft = rawLeft.coerceIn(min(0f, minLeft), max(0f, minLeft))
+        val clampedTop = rawTop.coerceIn(min(0f, minTop), max(0f, minTop))
 
         val matrix = Matrix().apply {
             postScale(finalScale, finalScale)
-            postTranslate(dx, dy)
+            postTranslate(clampedLeft, clampedTop)
         }
         canvas.drawBitmap(bitmap, matrix, paint)
     }
 
-    private fun drawKineticSubtitle(
+    private fun drawTopMemeBar(
+        canvas: Canvas,
+        text: String,
+        bgPaint: Paint,
+        textPaint: Paint
+    ) {
+        val barHeight = OUT_HEIGHT * 0.145f
+        canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), barHeight, bgPaint)
+
+        val maxW = OUT_WIDTH * 0.88f
+        val lines = wrapLines(text, textPaint, maxW, maxLines = 2)
+        val lineHeight = 50f
+        val centerY = barHeight * 0.56f
+        val startY = centerY - ((lines.size - 1) * lineHeight) / 2f + 12f
+        lines.forEachIndexed { idx, line ->
+            canvas.drawText(line, OUT_WIDTH / 2f, startY + idx * lineHeight, textPaint)
+        }
+    }
+
+    /**
+     * Strictly ONE word at a time dead-center (50% X, 52% Y) with crisp drop-shadow and 120ms pop-in.
+     */
+    private fun drawSingleWordCenterSubtitle(
         canvas: Canvas,
         caption: CaptionChunk,
         editedMs: Long,
-        fillPaint: Paint,
-        strokePaint: Paint
+        paint: Paint
     ) {
         val popScale = SubtitleEngine.computePopScale(editedMs, caption)
-        val safeCenterY = OUT_HEIGHT * 0.77f
-        val maxTextWidth = OUT_WIDTH * 0.86f
-        val lines = wrapCaptionLines(caption.text, fillPaint, maxTextWidth)
+        val centerX = OUT_WIDTH * 0.50f
+        val centerY = OUT_HEIGHT * 0.52f
+
+        paint.color = caption.color.argb
+        // Auto-fit very long Russian words cleanly inside 88% width
+        var textSize = if (caption.isActionNote) 64f else 82f
+        paint.textSize = textSize
+        val maxW = OUT_WIDTH * 0.88f
+        while (paint.measureText(caption.text) > maxW && textSize > 38f) {
+            textSize -= 4f
+            paint.textSize = textSize
+        }
+
+        val fm = paint.fontMetrics
+        val baselineOffset = -(fm.ascent + fm.descent) / 2f
 
         canvas.save()
-        canvas.translate(OUT_WIDTH / 2f, safeCenterY)
+        canvas.translate(centerX, centerY)
         canvas.scale(popScale, popScale)
-
-        fillPaint.color = caption.color.argb
-        val lineHeight = 76f
-        val startY = -((lines.size - 1) * lineHeight) / 2f
-
-        lines.forEachIndexed { idx, line ->
-            val y = startY + idx * lineHeight
-            canvas.drawText(line, 0f, y, strokePaint)
-            canvas.drawText(line, 0f, y, fillPaint)
-        }
+        canvas.drawText(caption.text, 0f, baselineOffset, paint)
         canvas.restore()
     }
 
-    private fun wrapCaptionLines(text: String, paint: Paint, maxWidth: Float): List<String> {
+    private fun wrapLines(text: String, paint: Paint, maxWidth: Float, maxLines: Int): List<String> {
         if (paint.measureText(text) <= maxWidth) return listOf(text)
-        val words = text.split(" ")
+        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.size <= 1) return listOf(text)
-        val mid = (words.size + 1) / 2
-        return listOf(
-            words.subList(0, mid).joinToString(" "),
-            words.subList(mid, words.size).joinToString(" ")
-        )
+        val lines = mutableListOf<String>()
+        var current = words[0]
+        for (i in 1 until words.size) {
+            val candidate = "$current ${words[i]}"
+            if (paint.measureText(candidate) <= maxWidth || lines.size == maxLines - 1) {
+                current = candidate
+            } else {
+                lines.add(current)
+                current = words[i]
+            }
+        }
+        lines.add(current)
+        return lines.take(maxLines)
     }
 
     private fun drawMidRollAdBanner(
@@ -699,10 +774,10 @@ object VideoExporter {
         badgeBgPaint: Paint,
         badgeTextPaint: Paint
     ) {
-        // Dim backdrop
+        // Subtle rgba(0, 0, 0, 0.45) dim backdrop
         canvas.drawRect(0f, 0f, OUT_WIDTH.toFloat(), OUT_HEIGHT.toFloat(), dimPaint)
 
-        // Size banner to occupy exactly 25%..35% of screen area, centered
+        // Centered box occupying strictly 25%..35% of screen area
         val targetArea = OUT_WIDTH.toFloat() * OUT_HEIGHT.toFloat() * (areaPercent / 100f)
         val imgAspect = (adBitmap.width.toFloat() / adBitmap.height.toFloat().coerceAtLeast(1f))
             .coerceIn(0.65f, 1.85f)
@@ -710,7 +785,7 @@ object VideoExporter {
         var boxHeight = boxWidth / imgAspect
 
         val maxW = OUT_WIDTH * 0.86f
-        val maxH = OUT_HEIGHT * 0.62f
+        val maxH = OUT_HEIGHT * 0.58f
         if (boxWidth > maxW) {
             boxWidth = maxW
             boxHeight = (targetArea / boxWidth).coerceAtMost(maxH)
@@ -724,10 +799,9 @@ object VideoExporter {
         val top = (OUT_HEIGHT - boxHeight) / 2f
         val rect = RectF(left, top, left + boxWidth, top + boxHeight)
 
-        // Draw ad banner image inside rounded neon frame
         val saveCount = canvas.save()
-        val path = android.graphics.Path().apply {
-            addRoundRect(rect, 28f, 28f, android.graphics.Path.Direction.CW)
+        val path = Path().apply {
+            addRoundRect(rect, 26f, 26f, Path.Direction.CW)
         }
         canvas.clipPath(path)
 
@@ -741,22 +815,22 @@ object VideoExporter {
         canvas.drawBitmap(adBitmap, m, bitmapPaint)
         canvas.restoreToCount(saveCount)
 
-        canvas.drawRoundRect(rect, 28f, 28f, borderPaint)
+        canvas.drawRoundRect(rect, 26f, 26f, borderPaint)
 
-        // Top badge: "РЕКЛАМА • 4с"
-        val badgeW = 240f
-        val badgeH = 48f
+        // Clean pill countdown badge above banner
+        val badgeW = 220f
+        val badgeH = 44f
         val badgeRect = RectF(
             OUT_WIDTH / 2f - badgeW / 2f,
-            top - badgeH - 18f,
+            top - badgeH - 16f,
             OUT_WIDTH / 2f + badgeW / 2f,
-            top - 18f
+            top - 16f
         )
-        canvas.drawRoundRect(badgeRect, 24f, 24f, badgeBgPaint)
+        canvas.drawRoundRect(badgeRect, 22f, 22f, badgeBgPaint)
         canvas.drawText(
             "РЕКЛАМА • ${remainingSec}с",
             badgeRect.centerX(),
-            badgeRect.centerY() + 9f,
+            badgeRect.centerY() + 8f,
             badgeTextPaint
         )
     }
@@ -784,6 +858,8 @@ object VideoExporter {
         context: Context,
         sourceUri: Uri,
         clips: List<VideoClip>,
+        reactionUri: Uri?,
+        reactionDurationMs: Long,
         includeAd: Boolean,
         adTriggerMs: Long,
         adDurationMs: Long,
@@ -807,43 +883,44 @@ object VideoExporter {
             null
         }
 
-        for (clip in clips) {
-            val clipStartEdited = editedCursorMs
-            val clipEndEdited = editedCursorMs + clip.durationMs
+        fun appendSegmentWithOptionalAd(
+            segUri: Uri,
+            segStartMs: Long,
+            segEndMs: Long
+        ) {
+            val segDuration = (segEndMs - segStartMs).coerceAtLeast(0L)
+            val segEditedStart = editedCursorMs
+            val segEditedEnd = editedCursorMs + segDuration
 
-            if (includeAd && !adInserted && adTriggerMs in clipStartEdited..clipEndEdited) {
-                val firstPartMs = (adTriggerMs - clipStartEdited).coerceAtLeast(0L)
-                val secondPartMs = (clip.durationMs - firstPartMs).coerceAtLeast(0L)
+            if (includeAd && !adInserted && adTriggerMs in segEditedStart..segEditedEnd) {
+                val firstPartMs = (adTriggerMs - segEditedStart).coerceAtLeast(0L)
+                val secondPartMs = (segDuration - firstPartMs).coerceAtLeast(0L)
 
                 if (firstPartMs > 0L) {
-                    val part1 = decodeAudioToStereo44100(
-                        context,
-                        sourceUri,
-                        clip.startMs,
-                        clip.startMs + firstPartMs
-                    )
-                    output.write(fitPcmLength(part1, msToPcmBytes(firstPartMs)))
+                    val p1 = decodeAudioToStereo44100(context, segUri, segStartMs, segStartMs + firstPartMs)
+                    output.write(fitPcmLength(p1, msToPcmBytes(firstPartMs)))
                 }
-
                 if (adPcm != null) {
                     output.write(adPcm)
                 }
                 adInserted = true
-
                 if (secondPartMs > 0L) {
-                    val part2 = decodeAudioToStereo44100(
-                        context,
-                        sourceUri,
-                        clip.startMs + firstPartMs,
-                        clip.endMs
-                    )
-                    output.write(fitPcmLength(part2, msToPcmBytes(secondPartMs)))
+                    val p2 = decodeAudioToStereo44100(context, segUri, segStartMs + firstPartMs, segEndMs)
+                    output.write(fitPcmLength(p2, msToPcmBytes(secondPartMs)))
                 }
             } else {
-                val clipPcm = decodeAudioToStereo44100(context, sourceUri, clip.startMs, clip.endMs)
-                output.write(fitPcmLength(clipPcm, msToPcmBytes(clip.durationMs)))
+                val pcm = decodeAudioToStereo44100(context, segUri, segStartMs, segEndMs)
+                output.write(fitPcmLength(pcm, msToPcmBytes(segDuration)))
             }
-            editedCursorMs = clipEndEdited
+            editedCursorMs = segEditedEnd
+        }
+
+        for (clip in clips) {
+            appendSegmentWithOptionalAd(sourceUri, clip.startMs, clip.endMs)
+        }
+
+        if (reactionUri != null && reactionDurationMs > 0L) {
+            appendSegmentWithOptionalAd(reactionUri, 0L, reactionDurationMs)
         }
 
         if (includeAd && !adInserted && adPcm != null) {

@@ -318,12 +318,14 @@ object AudioAnalyzer {
             for (b in startB..endB) {
                 if (envelope[b] > peak) peak = envelope[b]
             }
+            val shouldCloseUp = (index % 2 == 1) || (index > 0 && peak >= 0.84f)
             VideoClip(
                 id = UUID.randomUUID().toString(),
                 startMs = s,
                 endMs = e,
                 peakIntensity = peak,
-                label = "Часть ${index + 1}"
+                label = "Часть ${index + 1}",
+                isCloseUp = shouldCloseUp
             )
         }
     }

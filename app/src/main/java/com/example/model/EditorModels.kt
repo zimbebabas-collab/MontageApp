@@ -4,75 +4,84 @@ import android.net.Uri
 
 enum class EditMode(
     val titleRu: String,
+    val shortTitleRu: String,
     val subtitleRu: String,
     val badgeRu: String,
     val defaultSilenceThreshold: Float,
     val defaultMinSilenceMs: Long,
-    val defaultEffects: EffectsConfig
+    val defaultFraming: FramingConfig,
+    val enablesMemeBar: Boolean
 ) {
-    LITVIN(
-        titleRu = "Литвин / Динамика",
-        subtitleRu = "Быстрые склейки без пауз, зум на пиках голоса, яркие цветные субтитры",
-        badgeRu = "ХИТ",
-        defaultSilenceThreshold = 0.14f,
-        defaultMinSilenceMs = 280L,
-        defaultEffects = EffectsConfig(
-            microZoomOnPeak = true,
-            cameraShakeOnPeak = false,
-            vignette = true,
-            chromaticFlash = false,
-            slowZoom = false,
-            zoomStrength = 0.13f,
-            shakeStrength = 0.35f
-        )
-    ),
-    MEME(
-        titleRu = "Мем / Прикол",
-        subtitleRu = "Тряска камеры на криках, хроматическая вспышка и контрастные субтитры",
-        badgeRu = "ВИРАЛ",
+    CLEAN_REFERENCE(
+        titleRu = "Чистый стиль (Как в референсе)",
+        shortTitleRu = "Чистый стиль",
+        subtitleRu = "Вырезка пауз, 1 слово в центре (Розовый / Голубой / Белый), чистые наезды 1.35x без лишнего шума",
+        badgeRu = "РЕФЕРЕНС",
         defaultSilenceThreshold = 0.13f,
-        defaultMinSilenceMs = 300L,
-        defaultEffects = EffectsConfig(
-            microZoomOnPeak = true,
-            cameraShakeOnPeak = true,
-            vignette = true,
-            chromaticFlash = true,
-            slowZoom = false,
-            zoomStrength = 0.15f,
-            shakeStrength = 0.70f
-        )
+        defaultMinSilenceMs = 280L,
+        defaultFraming = FramingConfig(
+            autoCloseUpCuts = true,
+            closeUpZoom = 1.35f,
+            focalX = 0.50f,
+            focalY = 0.36f,
+            peakPunchEnabled = true,
+            peakPunchBonus = 0.05f,
+            vignette = false
+        ),
+        enablesMemeBar = false
     ),
-    LIGHT(
-        titleRu = "Лайт / Разговорный",
-        subtitleRu = "Мягкая нарезка пауз, плавный кино-зум и чистые выделенные субтитры",
-        badgeRu = "КЛИН",
-        defaultSilenceThreshold = 0.08f,
-        defaultMinSilenceMs = 460L,
-        defaultEffects = EffectsConfig(
-            microZoomOnPeak = false,
-            cameraShakeOnPeak = false,
-            vignette = true,
-            chromaticFlash = false,
-            slowZoom = true,
-            zoomStrength = 0.07f,
-            shakeStrength = 0.20f
-        )
+    LITVIN_DYNAMIC(
+        titleRu = "Динамика / Литвин",
+        shortTitleRu = "Динамика",
+        subtitleRu = "Ещё быстрее склейки, усиленные зум-удары на пиках голоса, жёлтые и зелёные акценты",
+        badgeRu = "ДИНАМИКА",
+        defaultSilenceThreshold = 0.16f,
+        defaultMinSilenceMs = 220L,
+        defaultFraming = FramingConfig(
+            autoCloseUpCuts = true,
+            closeUpZoom = 1.42f,
+            focalX = 0.50f,
+            focalY = 0.36f,
+            peakPunchEnabled = true,
+            peakPunchBonus = 0.10f,
+            vignette = true
+        ),
+        enablesMemeBar = false
+    ),
+    MEME_INSERT(
+        titleRu = "Мем-вклейка",
+        shortTitleRu = "Мем-вклейка",
+        subtitleRu = "Чёрная верхняя плашка с заголовком + вклейка мемного клипа или реакции в конец ролика",
+        badgeRu = "МЕМ",
+        defaultSilenceThreshold = 0.13f,
+        defaultMinSilenceMs = 280L,
+        defaultFraming = FramingConfig(
+            autoCloseUpCuts = true,
+            closeUpZoom = 1.35f,
+            focalX = 0.50f,
+            focalY = 0.38f,
+            peakPunchEnabled = true,
+            peakPunchBonus = 0.05f,
+            vignette = false
+        ),
+        enablesMemeBar = true
     )
 }
 
 enum class EditorTab(val titleRu: String) {
     MODE("Режим"),
     SLICES("Нарезка"),
-    CAPTIONS("Субтитры"),
-    EFFECTS("Эффекты"),
+    CAPTIONS("Слова"),
+    FRAMING("Камера"),
     AD("Реклама")
 }
 
 enum class CaptionColor(val argb: Int, val labelRu: String) {
-    WHITE(0xFFFFFFFF.toInt(), "Белый"),
-    YELLOW(0xFFFFE600.toInt(), "Жёлтый"),
-    NEON_GREEN(0xFF39FF14.toInt(), "Неон"),
-    CYAN(0xFF00F0FF.toInt(), "Циан")
+    SPEAKER_PINK(0xFFF472B6.toInt(), "Спикер 1"),
+    SPEAKER_BLUE(0xFF38BDF8.toInt(), "Спикер 2"),
+    ACTION_WHITE(0xFFFFFFFF.toInt(), "Действие"),
+    ACCENT_YELLOW(0xFFFACC15.toInt(), "Жёлтый"),
+    ACCENT_GREEN(0xFF4ADE80.toInt(), "Зелёный")
 }
 
 data class VideoClip(
@@ -80,7 +89,8 @@ data class VideoClip(
     val startMs: Long,
     val endMs: Long,
     val peakIntensity: Float = 0.5f,
-    val label: String = ""
+    val label: String = "",
+    val isCloseUp: Boolean = false
 ) {
     val durationMs: Long get() = (endMs - startMs).coerceAtLeast(100L)
 }
@@ -131,19 +141,28 @@ data class CaptionChunk(
     val text: String,
     val startMs: Long,
     val endMs: Long,
-    val color: CaptionColor
+    val color: CaptionColor,
+    val isActionNote: Boolean = false
 ) {
-    val durationMs: Long get() = (endMs - startMs).coerceAtLeast(200L)
+    val durationMs: Long get() = (endMs - startMs).coerceAtLeast(140L)
 }
 
-data class EffectsConfig(
-    val microZoomOnPeak: Boolean = true,
-    val cameraShakeOnPeak: Boolean = false,
-    val vignette: Boolean = true,
-    val chromaticFlash: Boolean = false,
-    val slowZoom: Boolean = false,
-    val zoomStrength: Float = 0.13f,
-    val shakeStrength: Float = 0.45f
+data class FramingConfig(
+    val autoCloseUpCuts: Boolean = true,
+    val closeUpZoom: Float = 1.35f,
+    val focalX: Float = 0.50f,
+    val focalY: Float = 0.36f,
+    val peakPunchEnabled: Boolean = true,
+    val peakPunchBonus: Float = 0.05f,
+    val vignette: Boolean = false
+)
+
+data class MemeConfig(
+    val topBarEnabled: Boolean = false,
+    val topBarText: String = "ВОСПРИНЯЛ ВСЁ БУКВАЛЬНО",
+    val reactionClipUri: Uri? = null,
+    val reactionClipName: String = "",
+    val reactionClipDurationMs: Long = 0L
 )
 
 data class AdBannerConfig(
@@ -151,7 +170,7 @@ data class AdBannerConfig(
     val imageUri: Uri? = null,
     val triggerAtMs: Long = 3000L,
     val durationSec: Int = 5,
-    val areaPercent: Int = 30, // 25%..35% of 9:16 screen area
+    val areaPercent: Int = 30, // 25%..35% of screen area
     val audioUri: Uri? = null,
     val audioDisplayName: String = "",
     val ttsText: String = "",
@@ -197,9 +216,10 @@ data class EditorUiState(
     val audioPeaks: List<AudioPeak> = emptyList(),
     val clips: List<VideoClip> = emptyList(),
     val selectedClipId: String? = null,
-    val silenceThreshold: Float = EditMode.LITVIN.defaultSilenceThreshold,
-    val editMode: EditMode = EditMode.LITVIN,
-    val effects: EffectsConfig = EditMode.LITVIN.defaultEffects,
+    val silenceThreshold: Float = EditMode.CLEAN_REFERENCE.defaultSilenceThreshold,
+    val editMode: EditMode = EditMode.CLEAN_REFERENCE,
+    val framing: FramingConfig = EditMode.CLEAN_REFERENCE.defaultFraming,
+    val meme: MemeConfig = MemeConfig(),
     val captionsEnabled: Boolean = true,
     val rawTranscriptText: String = "",
     val captions: List<CaptionChunk> = emptyList(),
@@ -216,13 +236,16 @@ data class EditorUiState(
     val adElapsedMs: Long = 0L,
     val exportState: ExportState = ExportState.Idle
 ) {
-    val totalEditedContentMs: Long
+    val totalMainContentMs: Long
         get() = clips.sumOf { it.durationMs }.coerceAtLeast(0L)
 
-    val totalWithAdMs: Long
-        get() = totalEditedContentMs + if (adBanner.enabled && adBanner.imageUri != null && clips.isNotEmpty()) {
-            adBanner.durationSec * 1000L
+    val activeReactionDurationMs: Long
+        get() = if (meme.reactionClipUri != null && meme.reactionClipDurationMs > 0L) {
+            meme.reactionClipDurationMs
         } else {
             0L
         }
+
+    val totalEditedContentMs: Long
+        get() = totalMainContentMs + activeReactionDurationMs
 }

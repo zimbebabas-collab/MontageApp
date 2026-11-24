@@ -9,16 +9,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 private val ReelsCutDarkColorScheme = darkColorScheme(
-    primary = NeonPurple,
-    onPrimary = Color(0xFF0D0D12),
-    primaryContainer = NeonPurpleContainer,
-    onPrimaryContainer = NeonPurpleBright,
-    secondary = ElectricCyan,
-    onSecondary = Color(0xFF06161C),
-    secondaryContainer = ElectricCyanContainer,
-    onSecondaryContainer = ElectricCyan,
-    tertiary = NeonGreen,
-    onTertiary = Color(0xFF061A04),
+    primary = SpeakerBlue,
+    onPrimary = Color(0xFF061621),
+    primaryContainer = SpeakerBlueContainer,
+    onPrimaryContainer = SpeakerBlue,
+    secondary = SpeakerPink,
+    onSecondary = Color(0xFF26091A),
+    secondaryContainer = SpeakerPinkContainer,
+    onSecondaryContainer = SpeakerPink,
+    tertiary = AccentGreen,
+    onTertiary = Color(0xFF052010),
     background = ObsidianBg,
     onBackground = TextPrimary,
     surface = SurfaceDark,
@@ -30,7 +30,7 @@ private val ReelsCutDarkColorScheme = darkColorScheme(
     surfaceContainer = SurfaceElevated,
     surfaceContainerHigh = SurfaceCard,
     outline = BorderSubtle,
-    outlineVariant = Color(0xFF25253A),
+    outlineVariant = Color(0xFF232333),
     error = HotCoral,
     onError = Color.White
 )
